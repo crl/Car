@@ -2,6 +2,26 @@
 
 面向自有运输车辆的本地内账软件，以车牌为主要标识，记录运费收入、日常运营支出和运输路线，查看单车及整体收支情况。适合单人本机使用，桌面优先并兼顾手机布局。
 
+## 下载安装
+
+请前往 [GitHub Releases](https://github.com/crl/Car/releases/latest) 下载：
+
+| 系统 | 安装文件 |
+| --- | --- |
+| Windows x64 | `.exe` 安装程序 |
+| macOS Apple Silicon（M 系列） | `_aarch64.dmg` |
+| macOS Intel | `_x64.dmg` |
+
+普通使用无需安装开发工具。macOS 需要14或以上，Windows 需要 WebView2。安装包尚未正式签名或公证。首次打开可创建空账本或导入原有 SQLite 文件；原文件保留。
+
+## v0.1.0 更新摘要
+
+- 从 Python 浏览器应用迁移为 Tauri 2 桌面应用，业务与数据库操作由 Rust 负责。
+- 保留车辆、账目、全部组合筛选、排序、分页、日历收支标记和全国区划树。
+- 收入与支出类型独立列表维护，编辑保留历史规则和快照。
+- 新增原生导入、Excel 保存、账本备份还原及退出保护。
+- 品牌更新为“运管家”，更换应用图标并调整 Dock 留白、设置弹窗布局。
+
 ## 桌面版开发与构建
 
 桌面版使用 Tauri 2，应用标识为 `com.crl.car`。前端由 Vite 构建，业务和 SQLite 读写在 Rust 中通过 `rusqlite` 执行；安装包包含前端资源，不部署 Python，也不需要运行本地 HTTP 服务。
@@ -107,7 +127,7 @@ python3 -B -m unittest discover -s tests -v
 
 旧版测试通过不代表桌面版或原生窗口已经验证。当前 Intel macOS 的本机桌面测试仍待完成；**Windows 界面必须在真实 Windows 环境验证，目前未验证**。安装、原生对话框、中文显示、退出提示、备份还原及导出仍需对应平台实测。
 
-CI 配置覆盖 macOS Apple Silicon、macOS Intel 和 Windows x64，运行测试并构建 `.dmg`／NSIS `.exe`，仅上传 workflow artifacts；配置存在不代表本次构建已成功，也不自动创建 GitHub Release。当前不配置代码签名、签名公证或自动更新。
+CI 配置覆盖 macOS Apple Silicon、macOS Intel 和 Windows x64，运行测试并构建 `.dmg`／NSIS `.exe`，先上传 workflow artifacts；三个平台构建全部成功后，发布 v0.1.0 Release 并附加安装包。构建状态以 GitHub Actions 为准。当前不配置代码签名、签名公证或自动更新。
 
 ## 当前使用边界
 
