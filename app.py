@@ -1,13 +1,14 @@
 import csv, io, json, os, sqlite3
 from urllib.parse import urlparse, parse_qs
 import regions
+import storage
 from excel_export import workbook
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 ROOT=Path(__file__).parent
 DB=Path(os.environ.get('CAR_DB',str(ROOT/'cars.db')))
-def connect():
- c=sqlite3.connect(DB); c.row_factory=sqlite3.Row
+def connect(database=None):
+ c=sqlite3.connect(DB if database is None else database); c.row_factory=sqlite3.Row
  c.execute('PRAGMA foreign_keys=ON')
  c.executescript('CREATE TABLE IF NOT EXISTS cars(id INTEGER PRIMARY KEY,name TEXT NOT NULL,plate TEXT,vin TEXT,note TEXT); CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY,car_id INTEGER NOT NULL REFERENCES cars(id),date TEXT NOT NULL,kind TEXT NOT NULL,category TEXT NOT NULL,cents INTEGER NOT NULL,party TEXT,note TEXT);')
  c.execute('CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,UNIQUE(kind,name))')
@@ -30,14 +31,16 @@ def connect():
 class App(BaseHTTPRequestHandler):
  def send(self,data,status=200,typ='application/json; charset=utf-8'):
   if not isinstance(data,bytes): data=json.dumps(data,ensure_ascii=False).encode()
-  self.send_response(status); self.send_header('Content-Type',typ); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
+  self.send_response(status); self.send_header('Cache-Control','no-store'); self.send_header('Content-Type',typ); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
  def do_GET(self):
   if self.path in ['/', '/cars', '/entries', '/categories', '/addresses'] or __import__('re').fullmatch(r'/cars/[0-9]+',self.path): return self.send((ROOT/'index.html').read_bytes(),typ='text/html; charset=utf-8')
-  if self.path in ['/style.css','/app.js']:
-   return self.send((ROOT/self.path[1:]).read_bytes(),typ='text/css; charset=utf-8' if self.path.endswith('.css') else 'text/javascript; charset=utf-8')
+  if urlparse(self.path).path in ['/style.css','/app.js']:
+   return self.send((ROOT/urlparse(self.path).path[1:]).read_bytes(),typ='text/css; charset=utf-8' if urlparse(self.path).path.endswith('.css') else 'text/javascript; charset=utf-8')
   if urlparse(self.path).path=='/api/regions':
    params=parse_qs(urlparse(self.path).query)
    return self.send({'items':regions.query(params.get('parent',[''])[0],params.get('q',[''])[0].strip()),'version':'2023-06-30','coverage':'大陆31省级地区（不含港澳台）'})
+  if self.path=='/api/settings': return self.send({'database_path':str(DB.resolve()),'default_path':str((ROOT/'cars.db').resolve()),'backup_path':str((DB.resolve().parent/'backups').resolve())})
+  if self.path=='/api/backup': return self.send(storage.snapshot(DB),typ='application/vnd.sqlite3')
   with connect() as c:
    if self.path=='/api/data': return self.send({t:[dict(r) for r in c.execute('SELECT * FROM '+t+' ORDER BY id DESC')] for t in ['cars','entries','categories','addresses']})
    if self.path=='/api/export':
@@ -46,6 +49,11 @@ class App(BaseHTTPRequestHandler):
  def do_POST(self):
   try:
    n=int(self.headers.get('Content-Length','0'))
+   if self.path=='/api/restore':
+    if n<=0 or n>50*1024*1024: raise ValueError('备份文件不能为空，最大50MB')
+    safety=storage.restore(DB,self.rfile.read(n),DB.resolve().parent/'backups',lambda path:connect(path).close())
+    connect().close()
+    return self.send({'ok':True,'safety_backup':safety})
    if n>100000: raise ValueError('内容过长')
    d=json.loads(self.rfile.read(n))
    with connect() as c:
@@ -96,22 +104,33 @@ class App(BaseHTTPRequestHandler):
      if not amount.is_finite() or amount<=0 or amount>Decimal('999999999') or amount*100!=(amount*100).to_integral_value(): raise ValueError('金额须大于零，最多两位小数')
      date.fromisoformat(d['date'])
      if d['kind'] not in ['收入','支出'] or not d['category'].strip(): raise ValueError('请填写有效收支项目')
-     if not c.execute('SELECT 1 FROM categories WHERE kind=? AND name=? AND active=1',(d['kind'],d['category'].strip())).fetchone(): raise ValueError('请选择有效类型')
+     old=c.execute('SELECT * FROM entries WHERE id=?',(int(d['id']),)).fetchone() if d.get('id') else None
+     if d.get('id') and not old: raise ValueError('记录不存在，请刷新')
+     same_category=bool(old and old['kind']==d['kind'] and old['category']==d['category'].strip())
      category=c.execute('SELECT requires_route FROM categories WHERE kind=? AND name=? AND active=1',(d['kind'],d['category'].strip())).fetchone()
-     start=d.get('start_address_id') or None;end=d.get('end_address_id') or None
-     if bool(start)!=bool(end) or (category['requires_route'] and not start): raise ValueError('请同时选择起点和终点，此类型可能要求必填路线')
+     if not category and not same_category: raise ValueError('请选择有效类型')
+     start=int(d['start_address_id']) if d.get('start_address_id') else None
+     end=int(d['end_address_id']) if d.get('end_address_id') else None
+     legacy_empty=bool(old and same_category and old['start_address_id'] is None and old['end_address_id'] is None and start is None and end is None)
+     if bool(start)!=bool(end) or (category and category['requires_route'] and not start and not legacy_empty): raise ValueError('请同时选择起点和终点')
      snapshots=[]
-     for address_id in [start,end]:
+     for side,address_id in [('start',start),('end',end)]:
+      if old and old[side+'_address_id']==address_id:
+       snapshots.append(old[side+'_address']);continue
       if address_id is None: snapshots.append(None);continue
-      address=c.execute('SELECT * FROM addresses WHERE id=? AND active=1',(int(address_id),)).fetchone()
+      address=c.execute('SELECT * FROM addresses WHERE id=? AND active=1',(address_id,)).fetchone()
       if not address: raise ValueError('所选地址已删除，请刷新后重新选择')
       snapshots.append(address['name']+(' / '+address['detail'] if address['detail'] else ''))
-     c.execute('INSERT INTO entries(car_id,date,kind,category,cents,party,note,start_address_id,end_address_id,start_address,end_address) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(int(d['car_id']),d['date'],d['kind'],d['category'].strip(),int(amount*100),d.get('party',''),d.get('note',''),start,end,*snapshots))
+     values=(int(d['car_id']),d['date'],d['kind'],d['category'].strip(),int(amount*100),d.get('party',''),d.get('note',''),start,end,*snapshots)
+     if old:
+      c.execute('UPDATE entries SET car_id=?,date=?,kind=?,category=?,cents=?,party=?,note=?,start_address_id=?,end_address_id=?,start_address=?,end_address=? WHERE id=?',values+(int(d['id']),))
+     else:
+      c.execute('INSERT INTO entries(car_id,date,kind,category,cents,party,note,start_address_id,end_address_id,start_address,end_address) VALUES(?,?,?,?,?,?,?,?,?,?,?)',values)
     else: return self.send({'error':'不存在'},404)
    self.send({'ok':True})
   except ValueError as e: self.send({'error':str(e)},400)
   except (KeyError,TypeError,sqlite3.Error,ArithmeticError): self.send({'error':'保存失败，请检查车辆、日期、金额和必填字段'},400)
 if __name__=='__main__':
  connect().close()
- print('汽车内账：http://127.0.0.1:8765',flush=True)
+ print('运管家：http://127.0.0.1:8765',flush=True)
  HTTPServer(('127.0.0.1',8765),App).serve_forever()
