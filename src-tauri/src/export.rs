@@ -78,7 +78,7 @@ fn write_inner(path: &Path, rows: &[Value]) -> Result<(), XlsxError> {
         let fallback = |key| {
             let s = text(row, key);
             if s.is_empty() {
-                "未记录"
+                "无"
             } else {
                 s
             }
@@ -173,7 +173,7 @@ mod tests {
         assert!(xml.contains("autoFilter ref=\"A1:J4\""));
         assert!(!xml.contains("<f"));
         assert!(strings.find("second").unwrap() < strings.find("first").unwrap());
-        for literal in ["=1+1", "@SUM(A1)", "+plate", "未记录"] {
+        for literal in ["=1+1", "@SUM(A1)", "+plate", "无"] {
             assert!(strings.contains(literal));
         }
         assert!(xml.contains("r=\"E6\" s=\"2\"><v>0.3</v>"));

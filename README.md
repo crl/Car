@@ -14,7 +14,12 @@
 
 普通使用无需安装开发工具。macOS 需要14或以上，Windows 需要 WebView2。安装包尚未正式签名或公证。首次打开可创建空账本或导入原有 SQLite 文件；原文件保留。
 
-## v0.1.0 更新摘要
+## v0.1.1 更新摘要
+
+- 薰衣草梦境主题与紫色货车图标，统一全应用组件。
+- 路线末级简称、缺失地址“无”、列表边缘对齐及合计间距优化。
+
+### 桌面版基础能力
 
 - 从 Python 浏览器应用迁移为 Tauri 2 桌面应用，业务与数据库操作由 Rust 负责。
 - 保留车辆、账目、全部组合筛选、排序、分页、日历收支标记和全国区划树。
@@ -127,7 +132,7 @@ python3 -B -m unittest discover -s tests -v
 
 旧版测试通过不代表桌面版或原生窗口已经验证。当前 Intel macOS 的本机桌面测试仍待完成；**Windows 界面必须在真实 Windows 环境验证，目前未验证**。安装、原生对话框、中文显示、退出提示、备份还原及导出仍需对应平台实测。
 
-CI 配置覆盖 macOS Apple Silicon、macOS Intel 和 Windows x64，运行测试并构建 `.dmg`／NSIS `.exe`，先上传 workflow artifacts；三个平台构建全部成功后，发布 v0.1.0 Release 并附加安装包。构建状态以 GitHub Actions 为准。当前不配置代码签名、签名公证或自动更新。
+CI 配置覆盖 macOS Apple Silicon、macOS Intel 和 Windows x64，运行测试并构建 `.dmg`／NSIS `.exe`，先上传 workflow artifacts；三个平台构建全部成功后，发布 v0.1.1 Release 并附加安装包。构建状态以 GitHub Actions 为准。当前不配置代码签名、签名公证或自动更新。
 
 ## 当前使用边界
 
