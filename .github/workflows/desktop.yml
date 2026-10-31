@@ -66,8 +66,39 @@ jobs:
         run: |
           mapfile -t installers < <(find release-assets -type f \( -name '*.dmg' -o -name '*.exe' \))
           test "${#installers[@]}" -eq 3
+          for file in "${installers[@]}"; do
+            case "$file" in
+              *_aarch64.dmg) name=YunGuanJia_0.1.0_macOS_arm64.dmg ;;
+              *_x64.dmg) name=YunGuanJia_0.1.0_macOS_x64.dmg ;;
+              *.exe) name=YunGuanJia_0.1.0_Windows_x64_setup.exe ;;
+            esac
+            mv "$file" "$(dirname "$file")/$name"
+          done
+          mapfile -t installers < <(find release-assets -type f \( -name '*.dmg' -o -name '*.exe' \))
           if gh release view v0.1.0 >/dev/null 2>&1; then
             gh release upload v0.1.0 "${installers[@]}" --clobber
           else
             gh release create v0.1.0 "${installers[@]}" --target "$GITHUB_SHA" --title '运管家 v0.1.0' --notes-file RELEASE_NOTES.md
           fi
+
+  repair-release-names:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Give existing installers stable product names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          gh api repos/$GH_REPO/releases/tags/v0.1.0 --jq '.assets[] | [.id,.name] | @tsv' | while IFS=$'\t' read -r id name; do
+            case "$name" in
+              _0.1.0_aarch64.dmg) replacement=YunGuanJia_0.1.0_macOS_arm64.dmg ;;
+              _0.1.0_x64.dmg) replacement=YunGuanJia_0.1.0_macOS_x64.dmg ;;
+              _0.1.0_x64-setup.exe) replacement=YunGuanJia_0.1.0_Windows_x64_setup.exe ;;
+              *) continue ;;
+            esac
+            gh api --method PATCH repos/$GH_REPO/releases/assets/$id -f name="$replacement" --silent
+          done
