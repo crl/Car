@@ -1,7 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
+import { check } from '@tauri-apps/plugin-updater';
+import { createUpdater } from './updater.js';
 let pending=0;
+let updater=null;
 export const service={
   async call(command,args){pending++;try{return await invoke(command,args)}finally{pending--}},
   async request(path,options={}){
@@ -19,7 +23,7 @@ let dialogQueue=Promise.resolve();
 export function confirmDialog(message){const next=dialogQueue.then(()=>new Promise(resolve=>{const d=document.createElement('dialog');d.className='frontend-dialog frontend-confirm';const p=document.createElement('p');p.textContent=message;d.append(p);for(const [text,value] of [['取消',false],['确定',true]]){const b=document.createElement('button');b.textContent=text;b.onclick=()=>{d.close();d.remove();resolve(value)};d.append(b)}d.addEventListener('cancel',e=>{e.preventDefault();d.remove();resolve(false)});document.body.append(d);d.showModal()}));dialogQueue=next.catch(()=>{});return next}
 export async function alertDialog(message){await confirmDialog(message)}
 let closing=false;
-async function requestExit(){if(closing||pending||window.frontendBusy?.())return;closing=true;try{if(window.frontendDirty?.()&&!await confirmDialog('还有未保存的内容，确定退出？'))return;await service.call('exit_app')}catch(e){await alertDialog(String(e))}finally{closing=false}}
+async function requestExit(){if(closing||pending||updater?.busy||window.frontendBusy?.())return;closing=true;try{if(window.frontendDirty?.()&&!await confirmDialog('还有未保存的内容，确定退出？'))return;await service.call('exit_app')}catch(e){await alertDialog(String(e))}finally{closing=false}}
 let acceptedHash=location.hash||'#/cars',routing=false;
 window.addEventListener('hashchange',async()=>{
  if(routing){history.replaceState(null,'',acceptedHash);return}
@@ -28,9 +32,9 @@ window.addEventListener('hashchange',async()=>{
  history.replaceState(null,'',acceptedHash);
  routing=true;
  try{
-  if(pending||window.frontendBusy?.())return;
+  if(pending||updater?.busy||window.frontendBusy?.())return;
   if(window.frontendDirty?.()&&!await confirmDialog('还有未保存的内容，确定放弃修改？'))return;
-  if(pending||window.frontendBusy?.())return;
+  if(pending||updater?.busy||window.frontendBusy?.())return;
   acceptedHash=next;history.replaceState(null,'',acceptedHash);location.reload();
  }finally{routing=false}
 });
@@ -40,5 +44,29 @@ async function boot(){try{
  const status=await service.call('startup_status');
  if(!status.initialized){await new Promise(resolve=>{const d=document.createElement('dialog');d.className='frontend-dialog frontend-welcome';d.innerHTML='<div class="modal-head"><h2>欢迎使用运管家</h2></div><div class="modal-body"><p>创建本机账本，或导入已有账本。</p><p role="alert"></p></div><div class="modal-footer row"></div>';d.addEventListener('cancel',e=>e.preventDefault());for(const [label,importExisting] of [['创建新账本',false],['导入已有账本',true]]){const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{d.querySelectorAll('button').forEach(x=>x.disabled=true);try{const result=await service.call('initialize_ledger',{importExisting});if(!result?.cancelled){d.remove();resolve()}}catch(e){d.querySelector('[role=alert]').textContent=String(e)}finally{d.querySelectorAll('button').forEach(x=>x.disabled=false)}};d.querySelector('.modal-footer').append(b)}document.body.append(d);d.showModal()})}
  await import('./app.js');
+ await initializeUpdates();
 }catch(e){const main=document.querySelector('main');main.replaceChildren();const p=document.createElement('p');p.setAttribute('role','alert');p.textContent='启动失败：'+String(e);const b=document.createElement('button');b.textContent='重试';b.onclick=()=>location.reload();main.append(p,b)}}
+
+async function initializeUpdates(){
+ updater=createUpdater({document,check,
+  prepareInstall:async()=>{
+   if(pending||window.frontendBusy?.()){await alertDialog('账本操作尚未完成，请稍后更新。');return false}
+   if(window.frontendDirty?.()&&!await confirmDialog('还有未保存的内容。更新将重启运管家，确定放弃这些修改并更新？'))return false;
+   if(pending||window.frontendBusy?.())return false;
+   await service.call('prepare_update');return true;
+  },
+  restart:()=>service.call('restart_after_update'),releaseInstall:()=>service.call('cancel_update')
+ });
+ const settings=document.querySelector('#settingsModal .modal-body');
+ const section=document.createElement('section');
+ const title=document.createElement('h2');title.textContent='软件更新';
+ const version=document.createElement('p');version.className='help';version.textContent=`当前版本 v${await getVersion()}`;
+ const button=document.createElement('button');button.type='button';button.textContent='检查更新';
+ button.onclick=()=>{updater.open();void updater.checkNow()};
+ section.append(title,version,button);settings.append(section);
+ void updater.checkNow();
+ const timer=setInterval(()=>void updater.checkNow(),6*60*60*1000);
+ window.addEventListener('pagehide',()=>{clearInterval(timer);updater.dispose()},{once:true});
+}
+
 boot();

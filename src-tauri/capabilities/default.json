@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "仅主窗口本地界面可调用桌面命令，无任意文件或网络权限。",
-  "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-destroy"]
+  "description": "主窗口本地界面及官方签名更新器；无通用文件或 HTTP 权限。",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "updater:default"
+  ]
 }

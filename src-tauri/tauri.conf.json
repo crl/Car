@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "运管家",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.crl.car",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -56,6 +56,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ4NjkyNDJCOTNBNTAzNTEKUldSUkE2V1RLeVJwMkllRWRnRzY0dTFTeFVkMTZPVUZiaHNtWllsNXR1MDhPVGdLdGdJS1BMbS8K",
+      "endpoints": [
+        "https://github.com/crl/Car/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
