@@ -41,6 +41,9 @@
     },
     "windows": {
       "nsis": {
+        "sidebarImage": "installer/sidebar.bmp",
+        "headerImage": "installer/header.bmp",
+        "installerIcon": "icons/icon.ico",
         "languages": [
           "SimpChinese"
         ],
