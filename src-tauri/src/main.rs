@@ -120,9 +120,9 @@ async fn save_record(
     .await
 }
 #[tauri::command]
-async fn query_regions(parent: String, q: String) -> Result<Value, String> {
+async fn query_regions(parent: String, q: String, all: Option<bool>) -> Result<Value, String> {
     Ok(
-        json!({"items":regions::query(&parent,&q),"version":"2023-06-30","coverage":"大陆31省级地区（不含港澳台）"}),
+        json!({"items":if all.unwrap_or(false) { regions::query_with_limit(&parent, &q, usize::MAX) } else { regions::query(&parent, &q) },"version":"2023-06-30","coverage":"大陆31省级地区（不含港澳台）"}),
     )
 }
 #[tauri::command]

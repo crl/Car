@@ -59,7 +59,7 @@ jobs:
           pattern: cheguanzhang-*
           path: release-assets
           merge-multiple: true
-      - name: Publish v0.1.1 installers
+      - name: Publish v0.1.2 installers
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -68,19 +68,15 @@ jobs:
           test "${#installers[@]}" -eq 3
           for file in "${installers[@]}"; do
             case "$file" in
-              *_aarch64.dmg) name=YunGuanJia_0.1.1_macOS_arm64.dmg ;;
-              *_x64.dmg) name=YunGuanJia_0.1.1_macOS_x64.dmg ;;
-              *.exe) name=YunGuanJia_0.1.1_Windows_x64_setup.exe ;;
+              *_aarch64.dmg) name=YunGuanJia_0.1.2_macOS_arm64.dmg ;;
+              *_x64.dmg) name=YunGuanJia_0.1.2_macOS_x64.dmg ;;
+              *.exe) name=YunGuanJia_0.1.2_Windows_x64_setup.exe ;;
             esac
             mv "$file" "$(dirname "$file")/$name"
           done
           mapfile -t installers < <(find release-assets -type f \( -name '*.dmg' -o -name '*.exe' \))
-          if gh release view v0.1.1 >/dev/null 2>&1; then
-            gh release upload v0.1.1 "${installers[@]}" --clobber
+          if gh release view v0.1.2 >/dev/null 2>&1; then
+            gh release upload v0.1.2 "${installers[@]}" --clobber
           else
-            gh release create v0.1.1 "${installers[@]}" --target "$GITHUB_SHA" --title '运管家 v0.1.1' --notes-file RELEASE_NOTES.md
-          fi
-
-          if gh release view v0.1.0 >/dev/null 2>&1; then
-            gh release delete v0.1.0 --yes
+            gh release create v0.1.2 "${installers[@]}" --target "$GITHUB_SHA" --title '运管家 v0.1.2' --notes-file RELEASE_NOTES.md
           fi
