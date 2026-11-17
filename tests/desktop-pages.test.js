@@ -9,7 +9,7 @@ const source=readFileSync(new URL('../app.js',import.meta.url),'utf8').replace(/
 function fixture(){return {drivers:[{id:1,name:'张师傅',phone:'13800138000',note:'夜班',car_ids:[1,2]},{id:2,name:'李师傅',phone:'',note:'',car_ids:[]}],cars:[{id:1,plate:'测试001',name:'旧车型',vin:'VIN1',note:'备注'},{id:2,plate:'测试002',name:'',vin:'',note:''}],categories:[{id:1,kind:'收入',name:'运费',active:1,requires_route:1},{id:2,kind:'支出',name:'油费',active:1,requires_route:0}],addresses:[{id:1,name:'上海',detail:'',active:1},{id:2,name:'杭州',detail:'',active:1}],entries:Array.from({length:81},(_,i)=>({id:i+1,car_id:i===80?2:1,date:'2026-10-'+String(25+i%7).padStart(2,'0'),kind:i%2?'支出':'收入',category:i%2?'油费':'运费',cents:10000,start_address_id:i%3?1:null,end_address_id:i%3?2:null,start_address:i%3?'上海':null,end_address:i%3?'杭州':null,start_address_detail:i===1?'小区602室':'',end_address_detail:i===1?'园区8号':'',party:i%2?'油站':'客户',note:'备注'}))}}
 async function page(route){const dom=new JSDOM(html,{url:'http://tauri.localhost/#'+route,runScripts:'outside-only'}),w=dom.window,calls=[],data=fixture();
  w.pinyin=pinyin;w.service={request:async()=>({ok:true,json:async()=>structuredClone(data)}),call:async(cmd,args)=>{calls.push({cmd,args});return {cancelled:true}}};w.confirmDialog=async()=>true;w.alertDialog=async()=>{};
- w.HTMLDialogElement.prototype.showModal=function(){this.open=true};w.HTMLDialogElement.prototype.close=function(){this.open=false};
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'))};
  const matches=w.Element.prototype.matches;w.Element.prototype.matches=function(s){return s===':popover-open'?this.hasAttribute('data-open'):matches.call(this,s)};
  w.HTMLElement.prototype.showPopover=function(){this.setAttribute('data-open','')};w.HTMLElement.prototype.hidePopover=function(){this.removeAttribute('data-open')};
  await vm.runInContext('(async()=>{'+source+'})()',dom.getInternalVMContext());return {dom,w,calls,close:()=>w.close()};}
@@ -357,5 +357,38 @@ test('vehicle deletion blocks recorded vehicles and confirms empty vehicles',asy
   };
   await w.deleteEditedRecord();assert.equal(d.querySelector('#modal').open,false);assert.doesNotMatch(d.querySelector('#cars').textContent,/测试001/);
   w.carForm();assert.equal(d.querySelector('#deleteRecord').hidden,true);
+ }finally{h.close()}
+});
+
+test('entry calendar changes the form date without changing list filters or losing edits',async()=>{
+ const h=await page('/entries'),w=h.w,d=w.document;
+ try{
+  w.editLedgerEntry(1);
+  const f=d.querySelector('#form'),date=f.elements.date;
+  f.elements.note.value='保留这条备注';
+  date.click();
+  const panel=d.querySelector('#ledgerCalendar');
+  assert.equal(panel.matches(':popover-open'),true);
+  assert.equal(panel.closest('dialog'),d.querySelector('#modal'));
+  assert.equal(d.querySelector('#calendarMonthTitle').textContent,'2026年10月');
+  assert.equal(d.querySelector('.calendar-day.selected').getAttribute('aria-label').startsWith('2026-10-25'),true);
+  w.changeCalendarMonth(1);w.chooseCalendarDay('2026-11-03');
+  assert.equal(date.value,'2026-11-03');
+  assert.equal(f.elements.note.value,'保留这条备注');
+  assert.equal(d.querySelector('#start').value,'');
+  assert.equal(d.querySelector('#end').value,'');
+  assert.match(d.querySelector('#subtotal').textContent,/81 笔/);
+  assert.equal(d.activeElement,date);
+  date.click();w.chooseCalendarDay('');
+  await f.onsubmit({preventDefault(){}});
+  assert.match(d.querySelector('#error-date').textContent,/请填写/);
+  assert.equal(d.querySelector('#modal').open,true);
+  w.entryForm();f.elements.date.click();
+  assert.equal(panel.matches(':popover-open'),true);
+  await w.requestClose();
+  assert.equal(panel.matches(':popover-open'),false);
+  d.querySelector('#start').click();w.chooseCalendarDay('2026-10-31');
+  assert.equal(panel.parentElement,d.body);
+  assert.match(d.querySelector('#subtotal').textContent,/11 笔/);
  }finally{h.close()}
 });

@@ -2,6 +2,8 @@
 mod export;
 mod ledger;
 mod regions;
+#[cfg(test)]
+mod update_tests;
 use serde_json::{json, Value};
 use std::{
     path::{Path, PathBuf},
@@ -18,6 +20,7 @@ struct DesktopState {
     operations: Mutex<()>,
     busy: AtomicUsize,
     allow_exit: AtomicBool,
+    updating: AtomicBool,
 }
 type Shared = Arc<DesktopState>;
 struct Busy(Shared);
@@ -37,6 +40,9 @@ async fn task<T: Send + 'static>(
             .operations
             .lock()
             .map_err(|_| "账本忙，请重启应用".to_string())?;
+        if state.updating.load(Ordering::SeqCst) {
+            return Err("更新正在安装，请稍候".into());
+        }
         f(&state)
     })
     .await
@@ -194,15 +200,46 @@ async fn export_ledger(
 }
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
-    if state.busy.load(Ordering::SeqCst) > 0 {
+    if state.busy.load(Ordering::SeqCst) > 0 || state.updating.load(Ordering::SeqCst) {
         return Err("账本操作尚未完成，请稍后退出".into());
     }
     state.allow_exit.store(true, Ordering::SeqCst);
     app.exit(0);
     Ok(())
 }
+fn reserve_update(state: &DesktopState) -> Result<(), String> {
+    let _lock = state.operations.try_lock().map_err(|_| "账本操作尚未完成，请稍后更新")?;
+    if state.busy.load(Ordering::SeqCst) > 0 || state.updating.load(Ordering::SeqCst) {
+        return Err("账本操作或更新尚未完成，请稍后更新".into());
+    }
+    state.updating.store(true, Ordering::SeqCst);
+    Ok(())
+}
+fn release_update(state: &DesktopState) {
+    state.allow_exit.store(false, Ordering::SeqCst);
+    state.updating.store(false, Ordering::SeqCst);
+}
+#[tauri::command]
+fn prepare_update(state: tauri::State<'_, Shared>) -> Result<(), String> {
+    reserve_update(state.inner())
+}
+#[tauri::command]
+fn cancel_update(state: tauri::State<'_, Shared>) {
+    release_update(state.inner());
+}
+#[tauri::command]
+fn restart_after_update(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
+    if !state.updating.load(Ordering::SeqCst) {
+        return Err("尚未准备好重启更新".into());
+    }
+    // Ordinary Quit requests stay blocked throughout macOS bundle replacement.
+    // Windows' updater exits directly after launching its installer.
+    state.allow_exit.store(true, Ordering::SeqCst);
+    app.restart();
+}
 fn main() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
@@ -212,6 +249,9 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_title(&format!("运管家 v{}", app.package_info().version))?;
+            }
             let folder = app.path().app_data_dir()?;
             #[cfg(debug_assertions)]
             let folder = std::env::var_os("CAR_DESKTOP_DATA_DIR")
@@ -223,6 +263,7 @@ fn main() {
                 operations: Mutex::new(()),
                 busy: AtomicUsize::new(0),
                 allow_exit: AtomicBool::new(false),
+                updating: AtomicBool::new(false),
             }));
             Ok(())
         })
@@ -245,7 +286,10 @@ fn main() {
             backup_ledger,
             restore_ledger,
             export_ledger,
-            exit_app
+            exit_app,
+            prepare_update,
+            cancel_update,
+            restart_after_update
         ])
         .build(tauri::generate_context!())
         .expect("运管家桌面环境初始化失败");
