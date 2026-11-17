@@ -137,3 +137,5 @@ main section:has(>table)>#subtotal,main section:has(>.scroll>table)>#subtotal{ma
 @media(min-width:701px){table:has(#cars) thead th:nth-child(6),table:has(#addressRows) th:last-child,.category-lists th:last-child,.drivers-table th:last-child{text-align:left}.drivers-table td:last-child{text-align:right}}
 
 @media(min-width:701px){table:has(#customAddressRows) th:last-child,table:has(#customAddressRows) td:last-child{width:1%;white-space:nowrap}table:has(#customAddressRows) td:last-child{text-align:right}table:has(#customAddressRows) th:last-child{text-align:left}}
+
+#deleteRecord{margin-right:auto;flex:0 0 auto}#deleteRecord[hidden]{display:none}

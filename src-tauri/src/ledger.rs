@@ -296,6 +296,17 @@ impl Ledger {
                     return Err("司机不存在，请刷新后重试".into());
                 }
             }
+            "cars/delete" => {
+                let car_id = i.filter(|id| *id > 0).ok_or("请选择车辆")?;
+                let tx = c.unchecked_transaction().map_err(err)?;
+                let entry_count: i64 = tx.query_row("SELECT COUNT(*) FROM entries WHERE car_id=?", [car_id], |row| row.get(0)).map_err(err)?;
+                if entry_count > 0 { return Err("该车辆有收支记录，请先逐笔删除收支记录后再删除车辆".into()); }
+                tx.execute("DELETE FROM driver_cars WHERE car_id=?", [car_id]).map_err(err)?;
+                if tx.execute("DELETE FROM cars WHERE id=?", [car_id]).map_err(err)? == 0 {
+                    return Err("车辆已删除或不存在，请刷新后重试".into());
+                }
+                tx.commit().map_err(err)?;
+            }
             "cars" => {
                 let plate = text(&d, "plate");
                 if plate.is_empty() {
@@ -409,6 +420,12 @@ impl Ledger {
                         params![n, detail, code],
                     )
                     .map_err(err)?;
+                }
+            }
+            "entries/delete" => {
+                let entry_id = i.filter(|id| *id > 0).ok_or("请选择收支记录")?;
+                if c.execute("DELETE FROM entries WHERE id=?", [entry_id]).map_err(err)? == 0 {
+                    return Err("收支记录已删除或不存在，请刷新后重试".into());
                 }
             }
             "entries" => {
@@ -631,6 +648,37 @@ mod tests {
 #[cfg(test)]
 mod regression_tests {
     use super::*;
+    #[test]
+    fn car_deletion_requires_no_entries_and_removes_only_driver_links() {
+        let dir = tempfile::tempdir().unwrap();let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        ledger.save("drivers", json!({"name":"司机"})).unwrap();
+        ledger.save("cars", json!({"plate":"A","driver_ids":[1]})).unwrap();
+        ledger.save("cars", json!({"plate":"B","driver_ids":[1]})).unwrap();
+        ledger.save("entries",json!({"car_id":1,"date":"2026-11-17","kind":"支出","category":"油费","amount":"1"})).unwrap();
+        assert!(ledger.save("cars/delete", json!({"id":1})).is_err());
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"],json!([1,2]));
+        ledger.save("cars/delete", json!({"id":2})).unwrap();
+        assert_eq!(ledger.data().unwrap()["cars"].as_array().unwrap().len(),1);
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"],json!([1]));
+        assert!(ledger.save("cars/delete", json!({})).is_err());
+        assert!(ledger.save("cars/delete", json!({"id":2})).is_err());
+        ledger.save("entries/delete",json!({"id":1})).unwrap();ledger.save("cars/delete",json!({"id":1})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"],json!([]));
+    }
+    #[test]
+    fn delete_entry_only_removes_requested_record() {
+        let dir = tempfile::tempdir().unwrap();let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        ledger.save("cars", json!({"plate":"A"})).unwrap();
+        let entry=json!({"car_id":1,"date":"2026-11-17","kind":"支出","category":"油费","amount":"1"});
+        ledger.save("entries", entry.clone()).unwrap();ledger.save("entries", entry).unwrap();
+        assert!(ledger.save("entries/delete", json!({})).is_err());
+        assert_eq!(ledger.data().unwrap()["entries"].as_array().unwrap().len(),2);
+        ledger.save("entries/delete", json!({"id":1})).unwrap();
+        assert_eq!(ledger.data().unwrap()["entries"].as_array().unwrap().len(),1);
+        assert_eq!(ledger.data().unwrap()["entries"][0]["id"],2);
+        assert!(ledger.save("entries/delete", json!({"id":1})).is_err());
+        assert_eq!(ledger.data().unwrap()["cars"].as_array().unwrap().len(),1);
+    }
     #[test]
     fn vehicle_driver_assignment_is_atomic_and_driver_edits_preserve_links() {
         let dir = tempfile::tempdir().unwrap();let ledger = Ledger::open(dir.path().join("db")).unwrap();

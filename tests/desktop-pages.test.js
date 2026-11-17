@@ -314,3 +314,48 @@ test('custom addresses save delete and become route suggestions',async()=>{
   await w.removeAddress(3);assert.doesNotMatch(d.querySelector('#customAddressRows').textContent,/西湖仓库/);
  }finally{h.close()}
 });
+
+test('entry deletion requires confirmation retains failed input and refreshes after success',async()=>{
+ for(const route of ['/entries','/cars/1']){
+  const h=await page(route),w=h.w,d=w.document,state=fixture(),requests=[];
+  try{
+   w.entryForm(1);assert.equal(d.querySelector('#deleteRecord').hidden,true);
+   w.editLedgerEntry(2);assert.equal(d.querySelector('#deleteRecord').hidden,false);
+   d.querySelector('#form').elements.note.value='尚未保存';
+   w.service.request=async(path,options)=>{requests.push(path);return {ok:true,json:async()=>state}};
+   w.confirmDialog=async message=>{assert.match(message,/测试001/);assert.match(message,/100\.00/);return false};
+   await w.deleteEditedRecord();assert.equal(requests.length,0);assert.equal(d.querySelector('#form').elements.note.value,'尚未保存');
+   w.confirmDialog=async()=>true;w.service.request=async()=>{throw Error('删除失败')};
+   await w.deleteEditedRecord();assert.equal(d.querySelector('#modal').open,true);assert.equal(d.querySelector('#save').disabled,false);assert.equal(d.querySelector('#form').elements.note.value,'尚未保存');
+   let finish;
+   w.service.request=async(path,options)=>{
+    requests.push(path);
+    if(path==='/api/entries/delete'){assert.equal(JSON.parse(options.body).id,2);await new Promise(resolve=>finish=resolve);state.entries=state.entries.filter(entry=>entry.id!==2);}
+    return {ok:true,json:async()=>state};
+   };
+   const deleting=w.deleteEditedRecord();await new Promise(resolve=>setTimeout(resolve,0));assert.equal(w.frontendBusy(),true);await w.deleteEditedRecord();
+   finish();await deleting;assert.equal(requests.filter(path=>path==='/api/entries/delete').length,1);assert.equal(d.querySelector('#modal').open,false);assert.equal(w.frontendBusy(),false);
+   w.driverForm(1);assert.equal(d.querySelector('#deleteRecord').hidden,true);
+  }finally{h.close()}
+ }
+});
+
+
+test('vehicle deletion blocks recorded vehicles and confirms empty vehicles',async()=>{
+ const h=await page('/cars'),w=h.w,d=w.document,state=fixture();
+ try{
+  let requests=0,confirmations=0;
+  w.service.request=async(path,options)=>{requests++;return {ok:true,json:async()=>state}};
+  w.confirmDialog=async()=>{confirmations++;return true};w.carForm(1);
+  assert.equal(d.querySelector('#deleteRecord').hidden,false);await w.deleteEditedRecord();
+  assert.match(d.querySelector('#error').textContent,/收支记录/);assert.equal(requests,0);assert.equal(confirmations,0);
+  state.entries=[];w.service.request=async()=>({ok:true,json:async()=>state});await w.load();w.carForm(1);
+  w.confirmDialog=async message=>{assert.match(message,/测试001/);return false};await w.deleteEditedRecord();assert.equal(d.querySelector('#modal').open,true);
+  w.confirmDialog=async()=>true;w.service.request=async(path,options)=>{
+   if(path==='/api/cars/delete'){assert.equal(JSON.parse(options.body).id,1);state.cars=state.cars.filter(car=>car.id!==1);state.drivers.forEach(driver=>driver.car_ids=driver.car_ids.filter(id=>id!==1));}
+   return {ok:true,json:async()=>state};
+  };
+  await w.deleteEditedRecord();assert.equal(d.querySelector('#modal').open,false);assert.doesNotMatch(d.querySelector('#cars').textContent,/测试001/);
+  w.carForm();assert.equal(d.querySelector('#deleteRecord').hidden,true);
+ }finally{h.close()}
+});
