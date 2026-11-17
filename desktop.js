@@ -13,7 +13,7 @@ export const service={
     let value;
     if(url.pathname==='/api/data')value=await this.call('read_data');
     else if(url.pathname==='/api/settings')value=await this.call('read_settings');
-    else if(url.pathname==='/api/regions')value=await this.call('query_regions',{parent:url.searchParams.get('parent')||'',q:url.searchParams.get('q')||''});
+    else if(url.pathname==='/api/regions')value=await this.call('query_regions',{parent:url.searchParams.get('parent')||'',q:url.searchParams.get('q')||'',...(url.searchParams.get('all')==='true'?{all:true}:{})});
     else if(options.method==='POST')value=await this.call('save_record',{resource:url.pathname.replace('/api/',''),data:JSON.parse(options.body)});
     else throw Error('不支持的操作');
     return {ok:true,json:async()=>value};

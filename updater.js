@@ -27,7 +27,7 @@ export function createUpdater({document,check,prepareInstall,restart,releaseInst
  close.onclick=()=>dialog.close();retry.onclick=()=>checkNow();action.onclick=()=>startUpdate();
  dialog.addEventListener('cancel',e=>{if(busy)e.preventDefault()});
  async function checkNow(){
-  if(checking||busy||disposed)return;
+  if(checking||busy||disposed||downloaded)return;
   checking=true;status.textContent='正在检查更新…';refresh();
   try{
    const next=await check({timeout:15000});
@@ -59,7 +59,6 @@ export function createUpdater({document,check,prepareInstall,restart,releaseInst
    status.textContent='更新已安装，正在重启…';
    await restart();
   }catch{
-   downloaded=false;
    status.textContent=installed?'更新已安装，自动重启失败，请关闭并重新打开运管家。':'更新失败，当前账本未受影响。请检查网络或安装权限后重试。';
   }finally{
    if(prepared)await releaseInstall().catch(()=>{});

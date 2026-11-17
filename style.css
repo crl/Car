@@ -7,7 +7,7 @@
   table:has(#cars) thead th:nth-child(4),
   table:has(#cars) thead th:nth-child(5),
   table:has(#entries) thead th:nth-child(5){text-align:right}
-  #cars tr > :nth-child(6), table:has(#cars) thead th:nth-child(6){text-align:center;white-space:nowrap}
+  #cars tr > :nth-child(6), table:has(#cars) thead th:nth-child(6){text-align:right;white-space:nowrap;width:1%}
   table:has(#cars) thead th:nth-child(3),
   table:has(#cars) thead th:nth-child(4),
   table:has(#cars) thead th:nth-child(5){min-width:100px}
@@ -129,3 +129,21 @@ main section>.scroll{margin-left:0;margin-right:0}
 @media(max-width:700px){main section:has(>table),main section:has(>.scroll>table){--list-inset:16px}main section>table tr,main section>.scroll>table tr{margin-left:0;margin-right:0;border-left:0;border-right:0;border-radius:0;padding-left:16px;padding-right:16px}}
 /* Filter subtotal aligns with the full-width list surface. */
 main section:has(>table)>#subtotal,main section:has(>.scroll>table)>#subtotal{margin-left:0;margin-right:0;border-radius:0}
+
+.route-endpoint-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:28px;margin-bottom:7px}.route-endpoint-heading .text-button{font-size:11px;padding:2px 0;text-align:right}.route-detail-label{margin-top:12px;color:var(--muted);font-size:12px}.route-detail-label input{color:var(--ink);font-size:13px}.route-pair .route-swap-icon{margin-top:35px}@media(max-width:700px){.route-pair .route-swap-icon{margin-top:0}}
+
+.route-search{position:relative}.route-search .suggestions{position:absolute;top:100%;left:0;right:0;z-index:10;background:#fff;box-shadow:0 8px 24px #29243d24}
+
+.driver-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;max-height:240px;overflow:auto}.driver-choices label{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;padding:10px;overflow-wrap:anywhere}.driver-choices input{margin:0;flex-shrink:0}#driverRows td:nth-child(4){white-space:pre-wrap}@media(max-width:700px){aside nav{flex-wrap:wrap}.driver-choices{grid-template-columns:1fr}}
+
+#driverSearch{width:280px;max-width:100%}
+
+@media(min-width:701px){.drivers-table{table-layout:fixed;min-width:760px}.drivers-table th:nth-child(1){width:120px}.drivers-table th:nth-child(2){width:160px}.drivers-table th:nth-child(3){width:180px}.drivers-table th:last-child{width:128px}.drivers-table td:last-child{white-space:nowrap}.drivers-table td:nth-child(4){overflow-wrap:anywhere}}
+@media(min-width:701px){table:has(#addressRows) th:last-child,table:has(#addressRows) td:last-child{width:1%;white-space:nowrap;text-align:right}}
+
+@media(min-width:701px){.category-lists th:last-child,.category-lists td:last-child{width:1%;white-space:nowrap;text-align:right}}
+@media(min-width:701px){table:has(#cars) thead th:nth-child(6),table:has(#addressRows) th:last-child,.category-lists th:last-child,.drivers-table th:last-child{text-align:left}.drivers-table td:last-child{text-align:right}}
+
+@media(min-width:701px){table:has(#customAddressRows) th:last-child,table:has(#customAddressRows) td:last-child{width:1%;white-space:nowrap}table:has(#customAddressRows) td:last-child{text-align:right}table:has(#customAddressRows) th:last-child{text-align:left}}
+
+#deleteRecord{margin-right:auto;flex:0 0 auto}#deleteRecord[hidden]{display:none}

@@ -115,6 +115,8 @@ impl Ledger {
                 ("entries", "end_address_id"),
                 ("entries", "start_address"),
                 ("entries", "end_address"),
+                ("entries", "start_address_detail"),
+                ("entries", "end_address_detail"),
                 ("categories", "requires_route"),
                 ("addresses", "region_code"),
             ]
@@ -141,6 +143,7 @@ impl Ledger {
             let tx = conn.unchecked_transaction().map_err(err)?;
             let conn = &tx;
             conn.execute_batch(r#"CREATE TABLE IF NOT EXISTS cars(id INTEGER PRIMARY KEY,name TEXT NOT NULL,plate TEXT,vin TEXT,note TEXT); CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY,car_id INTEGER NOT NULL REFERENCES cars(id),date TEXT NOT NULL,kind TEXT NOT NULL,category TEXT NOT NULL,cents INTEGER NOT NULL,party TEXT,note TEXT); CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,UNIQUE(kind,name));CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS addresses(id INTEGER PRIMARY KEY,name TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);CREATE UNIQUE INDEX IF NOT EXISTS addresses_active_name ON addresses(name) WHERE active=1;"#).map_err(err)?;
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS drivers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,phone TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS driver_cars(driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,car_id INTEGER NOT NULL REFERENCES cars(id),PRIMARY KEY(driver_id,car_id));").map_err(err)?;
             for (table, col, typ) in [
                 ("categories", "requires_route", "INTEGER NOT NULL DEFAULT 0"),
                 ("addresses", "region_code", "TEXT"),
@@ -156,6 +159,8 @@ impl Ledger {
                 ),
                 ("entries", "start_address", "TEXT"),
                 ("entries", "end_address", "TEXT"),
+                ("entries", "start_address_detail", "TEXT NOT NULL DEFAULT ''"),
+                ("entries", "end_address_detail", "TEXT NOT NULL DEFAULT ''"),
             ] {
                 if rows(&conn, &format!("PRAGMA table_info({table})"))?
                     .iter()
@@ -206,6 +211,12 @@ impl Ledger {
                 &format!("SELECT * FROM {t} ORDER BY id DESC")
             )?);
         }
+        let mut drivers = rows(&self.conn, "SELECT * FROM drivers ORDER BY id DESC")?;
+        let links = rows(&self.conn, "SELECT driver_id,car_id FROM driver_cars ORDER BY car_id")?;
+        for driver in &mut drivers {
+            driver["car_ids"] = json!(links.iter().filter(|link| link["driver_id"] == driver["id"]).map(|link| link["car_id"].clone()).collect::<Vec<_>>());
+        }
+        o["drivers"] = json!(drivers);
         Ok(o)
     }
     pub fn export_rows(&self, ids: &[i64]) -> Result<Vec<Value>> {
@@ -268,31 +279,73 @@ impl Ledger {
         let resource = resource.trim_start_matches("/api/");
         let i = id(&d, "id")?;
         match resource {
+            "drivers" => {
+                let name = text(&d, "name");
+                if name.is_empty() { return Err("请填写司机姓名".into()); }
+                if let Some(driver_id) = i {
+                    if c.execute("UPDATE drivers SET name=?,phone=?,note=? WHERE id=?", params![name,text(&d,"phone"),text(&d,"note"),driver_id]).map_err(err)? == 0 {
+                        return Err("司机不存在，请刷新后重试".into());
+                    }
+                } else {
+                    c.execute("INSERT INTO drivers(name,phone,note) VALUES(?,?,?)", params![name,text(&d,"phone"),text(&d,"note")]).map_err(err)?;
+                }
+            }
+            "drivers/delete" => {
+                let driver_id = i.ok_or("请选择司机")?;
+                if c.execute("DELETE FROM drivers WHERE id=?", [driver_id]).map_err(err)? == 0 {
+                    return Err("司机不存在，请刷新后重试".into());
+                }
+            }
+            "cars/delete" => {
+                let car_id = i.filter(|id| *id > 0).ok_or("请选择车辆")?;
+                let tx = c.unchecked_transaction().map_err(err)?;
+                let entry_count: i64 = tx.query_row("SELECT COUNT(*) FROM entries WHERE car_id=?", [car_id], |row| row.get(0)).map_err(err)?;
+                if entry_count > 0 { return Err("该车辆有收支记录，请先逐笔删除收支记录后再删除车辆".into()); }
+                tx.execute("DELETE FROM driver_cars WHERE car_id=?", [car_id]).map_err(err)?;
+                if tx.execute("DELETE FROM cars WHERE id=?", [car_id]).map_err(err)? == 0 {
+                    return Err("车辆已删除或不存在，请刷新后重试".into());
+                }
+                tx.commit().map_err(err)?;
+            }
             "cars" => {
                 let plate = text(&d, "plate");
                 if plate.is_empty() {
                     return Err("请填写车牌".into());
                 }
-                let name = if i.is_some() && d.get("name").is_none() {
-                    c.query_row("SELECT name FROM cars WHERE id=?", [i], |r| {
-                        r.get::<_, String>(0)
-                    })
-                    .map_err(|_| "车辆不存在".to_string())?
-                } else {
-                    text(&d, "name")
+                let driver_ids = match d.get("driver_ids") {
+                    Some(Value::Array(values)) => Some(values.iter().map(|value| value.as_i64().filter(|id| *id > 0).ok_or("请选择有效司机"))
+                        .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?),
+                    None => None,
+                    _ => return Err("请选择有效司机".into()),
                 };
-                if let Some(i) = i {
-                    c.execute(
-                        "UPDATE cars SET name=?,plate=?,vin=?,note=? WHERE id=?",
-                        params![name, plate, text(&d, "vin"), text(&d, "note"), i],
-                    )
-                } else {
-                    c.execute(
-                        "INSERT INTO cars(name,plate,vin,note) VALUES(?,?,?,?)",
-                        params![name, plate, text(&d, "vin"), text(&d, "note")],
-                    )
+                let tx = c.unchecked_transaction().map_err(err)?;
+                if let Some(ids) = &driver_ids {
+                    for driver_id in ids {
+                        if tx.query_row("SELECT 1 FROM drivers WHERE id=?", [driver_id], |_| Ok(())).optional().map_err(err)?.is_none() {
+                            return Err("所选司机不存在，请刷新后重试".into());
+                        }
+                    }
                 }
-                .map_err(err)?;
+                let old = if let Some(car_id) = i {
+                    Some(tx.query_row("SELECT name,vin FROM cars WHERE id=?", [car_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?)))
+                        .optional().map_err(err)?.ok_or("车辆不存在，请刷新后重试")?)
+                } else { None };
+                let name = if d.get("name").is_none() { old.as_ref().map(|(name,_)| name.clone()).unwrap_or_default() } else { text(&d,"name") };
+                let vin = if d.get("vin").is_none() { old.as_ref().and_then(|(_,vin)| vin.clone()).unwrap_or_default() } else { text(&d,"vin") };
+                let car_id = if let Some(car_id) = i {
+                    tx.execute("UPDATE cars SET name=?,plate=?,vin=?,note=? WHERE id=?", params![name,plate,vin,text(&d,"note"),car_id]).map_err(err)?;
+                    car_id
+                } else {
+                    tx.execute("INSERT INTO cars(name,plate,vin,note) VALUES(?,?,?,?)", params![name,plate,vin,text(&d,"note")]).map_err(err)?;
+                    tx.last_insert_rowid()
+                };
+                if let Some(ids) = driver_ids {
+                    tx.execute("DELETE FROM driver_cars WHERE car_id=?", [car_id]).map_err(err)?;
+                    for driver_id in ids {
+                        tx.execute("INSERT INTO driver_cars(driver_id,car_id) VALUES(?,?)", params![driver_id,car_id]).map_err(err)?;
+                    }
+                }
+                tx.commit().map_err(err)?;
             }
             "categories/delete" => {
                 c.execute("UPDATE categories SET active=0 WHERE id=?", [i])
@@ -369,6 +422,12 @@ impl Ledger {
                     .map_err(err)?;
                 }
             }
+            "entries/delete" => {
+                let entry_id = i.filter(|id| *id > 0).ok_or("请选择收支记录")?;
+                if c.execute("DELETE FROM entries WHERE id=?", [entry_id]).map_err(err)? == 0 {
+                    return Err("收支记录已删除或不存在，请刷新后重试".into());
+                }
+            }
             "entries" => {
                 let amount = cents(&d["amount"])?;
                 let date = text(&d, "date");
@@ -404,6 +463,11 @@ impl Ledger {
                 }
                 let start = id(&d, "start_address_id")?;
                 let end = id(&d, "end_address_id")?;
+                let start_detail = text(&d, "start_address_detail");
+                let end_detail = text(&d, "end_address_detail");
+                if (!start_detail.is_empty() && start.is_none()) || (!end_detail.is_empty() && end.is_none()) {
+                    return Err("填写详细地址前请选择对应地区".into());
+                }
                 let legacy =
                     same && old.as_ref().is_some_and(|o| {
                         o["start_address_id"].is_null() && o["end_address_id"].is_null()
@@ -456,9 +520,9 @@ impl Ledger {
                 let party = text(&d, "party");
                 let note = text(&d, "note");
                 if let Some(i) = i {
-                    c.execute("UPDATE entries SET car_id=?,date=?,kind=?,category=?,cents=?,party=?,note=?,start_address_id=?,end_address_id=?,start_address=?,end_address=? WHERE id=?",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1],i]).map_err(err)?;
+                    c.execute("UPDATE entries SET car_id=?,date=?,kind=?,category=?,cents=?,party=?,note=?,start_address_id=?,end_address_id=?,start_address=?,end_address=?,start_address_detail=?,end_address_detail=? WHERE id=?",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1],start_detail,end_detail,i]).map_err(err)?;
                 } else {
-                    c.execute("INSERT INTO entries(car_id,date,kind,category,cents,party,note,start_address_id,end_address_id,start_address,end_address) VALUES(?,?,?,?,?,?,?,?,?,?,?)",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1]]).map_err(err)?;
+                    c.execute("INSERT INTO entries(car_id,date,kind,category,cents,party,note,start_address_id,end_address_id,start_address,end_address,start_address_detail,end_address_detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1],start_detail,end_detail]).map_err(err)?;
                 }
             }
             _ => return Err("不存在".into()),
@@ -584,6 +648,113 @@ mod tests {
 #[cfg(test)]
 mod regression_tests {
     use super::*;
+    #[test]
+    fn car_deletion_requires_no_entries_and_removes_only_driver_links() {
+        let dir = tempfile::tempdir().unwrap();let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        ledger.save("drivers", json!({"name":"司机"})).unwrap();
+        ledger.save("cars", json!({"plate":"A","driver_ids":[1]})).unwrap();
+        ledger.save("cars", json!({"plate":"B","driver_ids":[1]})).unwrap();
+        ledger.save("entries",json!({"car_id":1,"date":"2026-11-17","kind":"支出","category":"油费","amount":"1"})).unwrap();
+        assert!(ledger.save("cars/delete", json!({"id":1})).is_err());
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"],json!([1,2]));
+        ledger.save("cars/delete", json!({"id":2})).unwrap();
+        assert_eq!(ledger.data().unwrap()["cars"].as_array().unwrap().len(),1);
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"],json!([1]));
+        assert!(ledger.save("cars/delete", json!({})).is_err());
+        assert!(ledger.save("cars/delete", json!({"id":2})).is_err());
+        ledger.save("entries/delete",json!({"id":1})).unwrap();ledger.save("cars/delete",json!({"id":1})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"],json!([]));
+    }
+    #[test]
+    fn delete_entry_only_removes_requested_record() {
+        let dir = tempfile::tempdir().unwrap();let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        ledger.save("cars", json!({"plate":"A"})).unwrap();
+        let entry=json!({"car_id":1,"date":"2026-11-17","kind":"支出","category":"油费","amount":"1"});
+        ledger.save("entries", entry.clone()).unwrap();ledger.save("entries", entry).unwrap();
+        assert!(ledger.save("entries/delete", json!({})).is_err());
+        assert_eq!(ledger.data().unwrap()["entries"].as_array().unwrap().len(),2);
+        ledger.save("entries/delete", json!({"id":1})).unwrap();
+        assert_eq!(ledger.data().unwrap()["entries"].as_array().unwrap().len(),1);
+        assert_eq!(ledger.data().unwrap()["entries"][0]["id"],2);
+        assert!(ledger.save("entries/delete", json!({"id":1})).is_err());
+        assert_eq!(ledger.data().unwrap()["cars"].as_array().unwrap().len(),1);
+    }
+    #[test]
+    fn vehicle_driver_assignment_is_atomic_and_driver_edits_preserve_links() {
+        let dir = tempfile::tempdir().unwrap();let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        for name in ["张", "李"] { ledger.save("drivers", json!({"name":name})).unwrap(); }
+        ledger.save("cars", json!({"plate":"A","vin":"legacy","driver_ids":[1,2,1]})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"], json!([1]));
+        ledger.save("drivers", json!({"id":1,"name":"张师傅","car_ids":[]})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"][1]["car_ids"], json!([1]));
+        assert!(ledger.save("cars", json!({"id":1,"plate":"changed","driver_ids":[999]})).is_err());
+        assert_eq!(ledger.data().unwrap()["cars"][0]["plate"], "A");
+        ledger.save("cars", json!({"id":1,"plate":"B"})).unwrap();
+        assert_eq!(ledger.data().unwrap()["cars"][0]["vin"], "legacy");
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"], json!([1]));
+        ledger.save("cars", json!({"id":1,"plate":"B","driver_ids":[]})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"], json!([]));
+        assert!(ledger.save("cars", json!({"plate":"C","driver_ids":"1"})).is_err());
+    }
+    #[test]
+    fn previous_database_adds_empty_driver_tables() {
+        let dir = tempfile::tempdir().unwrap();let path = dir.path().join("db");
+        let ledger = Ledger::open(&path).unwrap();ledger.save("cars", json!({"plate":"A"})).unwrap();
+        ledger.conn.execute_batch("DROP TABLE driver_cars;DROP TABLE drivers;").unwrap();drop(ledger);
+        let ledger = Ledger::open(&path).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"], json!([]));assert_eq!(ledger.data().unwrap()["cars"][0]["plate"], "A");
+        ledger.save("drivers", json!({"name":"司机"})).unwrap();
+        ledger.save("cars", json!({"id":1,"plate":"A","driver_ids":[1]})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"], json!([1]));
+    }
+    #[test]
+    fn drivers_support_multiple_cars_atomic_edits_and_backups() {
+        let dir = tempfile::tempdir().unwrap();let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"], json!([]));
+        for name in ["张师傅", "李师傅"] { ledger.save("drivers", json!({"name":name})).unwrap(); }
+        for plate in ["A", "B"] { ledger.save("cars", json!({"plate":plate,"driver_ids":[1,2]})).unwrap(); }
+        assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"], json!([1,2]));
+        ledger.save("drivers", json!({"id":1,"name":"张师傅","phone":"13800138000","note":"夜班"})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"][1]["car_ids"], json!([1,2]));
+        let backup = dir.path().join("backup");ledger.snapshot_to(&backup).unwrap();
+        ledger.save("drivers/delete", json!({"id":2})).unwrap();
+        assert_eq!(ledger.data().unwrap()["drivers"].as_array().unwrap().len(),1);
+        assert_eq!(rows(&ledger.conn,"SELECT * FROM driver_cars").unwrap().len(),2);
+        ledger.restore_from(&backup).unwrap();assert_eq!(ledger.data().unwrap()["drivers"][0]["car_ids"],json!([1,2]));
+        assert!(ledger.save("drivers", json!({"name":"  "})).is_err());
+    }
+    #[test]
+    fn previous_schema_upgrades_with_empty_details_once() {
+        let dir = tempfile::tempdir().unwrap();let path = dir.path().join("db");
+        let ledger = Ledger::open(&path).unwrap();
+        ledger.save("cars", json!({"plate":"A"})).unwrap();
+        ledger.save("entries", json!({"car_id":1,"date":"2026-11-16","kind":"支出","category":"油费","amount":"1"})).unwrap();
+        ledger.conn.execute_batch("ALTER TABLE entries DROP COLUMN start_address_detail; ALTER TABLE entries DROP COLUMN end_address_detail;").unwrap();
+        drop(ledger);
+        let upgraded = Ledger::open(&path).unwrap();
+        let entry = &upgraded.data().unwrap()["entries"][0];
+        assert_eq!(entry["start_address_detail"], "");assert_eq!(entry["end_address_detail"], "");assert_eq!(entry["cents"], 100);
+        drop(upgraded);drop(Ledger::open(&path).unwrap());
+        assert_eq!(std::fs::read_dir(dir.path().join("backups")).unwrap().count(), 1);
+    }
+    #[test]
+    fn entry_details_save_edit_clear_and_require_region() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        ledger.save("cars", json!({"plate":"A"})).unwrap();
+        for name in ["上海", "杭州"] { ledger.save("addresses", json!({"name":name})).unwrap(); }
+        let mut entry = json!({"car_id":1,"date":"2026-11-16","kind":"支出","category":"油费","amount":"1","start_address_detail":"小区602室"});
+        assert!(ledger.save("entries", entry.clone()).is_err());
+        entry["start_address_id"] = json!(1); entry["end_address_id"] = json!(2);
+        entry["end_address_detail"] = json!("园区8号");
+        ledger.save("entries", entry.clone()).unwrap();
+        assert_eq!(ledger.data().unwrap()["entries"][0]["start_address_detail"], "小区602室");
+        assert_eq!(ledger.export_rows(&[1]).unwrap()[0]["end_address_detail"], "园区8号");
+        entry["id"] = json!(1);entry["start_address_detail"] = json!("");
+        ledger.save("entries", entry).unwrap();
+        assert_eq!(ledger.data().unwrap()["entries"][0]["start_address_detail"], "");
+        assert_eq!(ledger.data().unwrap()["entries"][0]["end_address_detail"], "园区8号");
+    }
     #[test]
     fn route_snapshots_and_archived_category_survive_edit() {
         let t = tempfile::tempdir().unwrap();

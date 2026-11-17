@@ -75,14 +75,14 @@ fn write_inner(path: &Path, rows: &[Value]) -> Result<(), XlsxError> {
     }
     for (index, (row, cents)) in rows.iter().zip(amounts).enumerate() {
         let r = index as u32 + 1;
-        let fallback = |key| {
-            let s = text(row, key);
-            if s.is_empty() {
-                "无"
-            } else {
-                s
-            }
+        let route = |side: &str| {
+            let region = text(row, &format!("{side}_address"));
+            let detail = text(row, &format!("{side}_address_detail"));
+            let parts: Vec<_> = [region, detail].into_iter().filter(|part| !part.is_empty()).collect();
+            if parts.is_empty() { "无".to_owned() } else { parts.join(" / ") }
         };
+        let start = route("start");
+        let end = route("end");
         let plate = text(row, "plate");
         for (col, value) in [
             (0, text(row, "date")),
@@ -96,8 +96,8 @@ fn write_inner(path: &Path, rows: &[Value]) -> Result<(), XlsxError> {
             ),
             (2, text(row, "kind")),
             (3, text(row, "category")),
-            (6, fallback("start_address")),
-            (7, fallback("end_address")),
+            (6, start.as_str()),
+            (7, end.as_str()),
             (8, text(row, "party")),
             (9, text(row, "note")),
         ] {
@@ -161,7 +161,7 @@ mod tests {
         write_workbook(
             &path,
             &[
-                json!({"date":"second","kind":"收入","cents":10,"name":"=1+1","note":"@SUM(A1)"}),
+                json!({"date":"second","kind":"收入","cents":10,"name":"=1+1","note":"@SUM(A1)","start_address":"浙江省 / 杭州市 / 西湖区","start_address_detail":"小区3栋602室"}),
                 json!({"date":"first","kind":"支出","cents":30,"plate":"+plate"}),
                 json!({"kind":"收入","cents":20}),
             ],
@@ -173,7 +173,7 @@ mod tests {
         assert!(xml.contains("autoFilter ref=\"A1:J4\""));
         assert!(!xml.contains("<f"));
         assert!(strings.find("second").unwrap() < strings.find("first").unwrap());
-        for literal in ["=1+1", "@SUM(A1)", "+plate", "无"] {
+        for literal in ["=1+1", "@SUM(A1)", "+plate", "无", "浙江省 / 杭州市 / 西湖区 / 小区3栋602室"] {
             assert!(strings.contains(literal));
         }
         assert!(xml.contains("r=\"E6\" s=\"2\"><v>0.3</v>"));

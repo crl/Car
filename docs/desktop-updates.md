@@ -11,7 +11,7 @@ installation. Installation requires confirmation if a form has unsaved changes a
 will wait for ledger operations to finish. Windows uses the passive installer;
 macOS replaces the application bundle and restarts.
 
-Version 0.1.1 has no updater. Install 0.1.2 manually once to join this update channel.
+Versions through 0.1.3 have no updater. Install 0.1.4 manually once to join this update channel.
 Updating does not move the ledger or change the application identifier.
 
 ## Maintainer setup

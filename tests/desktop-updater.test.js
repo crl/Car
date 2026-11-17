@@ -60,3 +60,15 @@ test('install failure releases native guard and concurrent clicks do not double 
   assert.equal(h.d.querySelector('#updateAction').disabled,false);
  }finally{h.close()}
 });
+
+test('download survives native reservation failure and subsequent update checks',async()=>{
+ let attempts=0;
+ const h=await setup({prepareInstall:async()=>{if(++attempts===1)throw Error('busy');return true}});
+ try{
+  await h.api.checkNow();await h.api.startUpdate();
+  await h.api.checkNow();await h.api.startUpdate();
+  assert.equal(h.events.filter(e=>e==='download').length,1);
+  assert.equal(h.events.filter(e=>e==='dispose').length,0);
+  assert.ok(h.events.includes('install'));
+ }finally{h.close()}
+});

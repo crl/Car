@@ -1,6 +1,6 @@
 {
   "name": "cheguanzhang",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-updater": "^2.14.1"
+    "@tauri-apps/plugin-updater": "^2.14.1",
+    "pinyin-pro": "^3.29.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
