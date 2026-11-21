@@ -126,6 +126,31 @@ async fn save_record(
     .await
 }
 #[tauri::command]
+async fn pick_excel_import(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<Value, String> {
+    use calamine::Reader;
+    task(state.inner().clone(), move |_| {
+        let Some(file) = app.dialog().file().add_filter("Excel 工作簿", &["xlsx"]).blocking_pick_file() else {
+            return Ok(json!({"cancelled":true}));
+        };
+        let path = picked_path(file)?;
+        let sheets = ledger::excel_import::workbook(&path)?.sheet_names();
+        Ok(json!({"path":path,"sheets":sheets}))
+    }).await
+}
+
+#[tauri::command]
+async fn import_excel(
+    state: tauri::State<'_, Shared>,
+    path: PathBuf,
+    options: ledger::excel_import::ImportOptions,
+    expected: Option<Value>,
+) -> Result<Value, String> {
+    task(state.inner().clone(), move |s| {
+        ledger::Ledger::open(&s.path)?.import_excel(&path, options, expected)
+    }).await
+}
+
+#[tauri::command]
 async fn query_regions(parent: String, q: String, all: Option<bool>) -> Result<Value, String> {
     Ok(
         json!({"items":if all.unwrap_or(false) { regions::query_with_limit(&parent, &q, usize::MAX) } else { regions::query(&parent, &q) },"version":"2023-06-30","coverage":"大陆31省级地区（不含港澳台）"}),
@@ -282,6 +307,8 @@ fn main() {
             read_data,
             save_record,
             query_regions,
+            pick_excel_import,
+            import_excel,
             read_settings,
             backup_ledger,
             restore_ledger,

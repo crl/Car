@@ -144,6 +144,28 @@ main section:has(>table)>#subtotal,main section:has(>.scroll>table)>#subtotal{ma
 @media(min-width:701px){.category-lists th:last-child,.category-lists td:last-child{width:1%;white-space:nowrap;text-align:right}}
 @media(min-width:701px){table:has(#cars) thead th:nth-child(6),table:has(#addressRows) th:last-child,.category-lists th:last-child,.drivers-table th:last-child{text-align:left}.drivers-table td:last-child{text-align:right}}
 
-@media(min-width:701px){table:has(#customAddressRows) th:last-child,table:has(#customAddressRows) td:last-child{width:1%;white-space:nowrap}table:has(#customAddressRows) td:last-child{text-align:right}table:has(#customAddressRows) th:last-child{text-align:left}}
+@media(701px <= width < 1050px){.custom-address-table th:nth-child(3),.custom-address-table td:last-child{width:1%;white-space:nowrap}.custom-address-table td:last-child{text-align:right}}
 
 #deleteRecord{margin-right:auto;flex:0 0 auto}#deleteRecord[hidden]{display:none}
+
+.excel-import[open]{display:flex;flex-direction:column;width:min(850px,calc(100vw - 32px));max-height:calc(100dvh - 32px)}
+.excel-import .modal-body{overflow:auto}
+.excel-import .import-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.excel-import .import-errors{max-height:160px;overflow:auto}
+
+.custom-address-repeat{display:none}
+@media(min-width:1050px){
+ .custom-address-table{--address-columns:minmax(0,1fr) minmax(0,1.3fr) 116px;display:block}
+ .custom-address-table thead,.custom-address-table tbody{display:block}
+ .custom-address-table thead tr{display:grid;grid-template-columns:var(--address-columns) var(--address-columns)}
+ .custom-address-table .custom-address-repeat{display:block}
+ .custom-address-table tbody{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+ .custom-address-table tbody tr{display:grid;grid-template-columns:var(--address-columns)}
+ .custom-address-table tbody tr:has(.empty),.custom-address-table .empty{grid-column:1/-1}
+ .custom-address-table tbody td{display:flex;align-items:center;min-width:0;padding-block:10px}
+ .custom-address-table tbody td:last-child{justify-content:flex-end;padding-inline:6px}
+ .custom-address-table thead th:nth-child(3n){text-align:center}
+ .custom-address-table tbody tr:nth-child(odd):not(:has(.empty)),.custom-address-table thead th:nth-child(3){border-right:1px solid var(--line)}
+ .custom-address-table tbody .empty{justify-content:center}
+}
+.excel-import .import-accounting{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}

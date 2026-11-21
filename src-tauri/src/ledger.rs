@@ -1,3 +1,5 @@
+#[path = "excel_import.rs"]
+pub mod excel_import;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -144,6 +146,7 @@ impl Ledger {
             let conn = &tx;
             conn.execute_batch(r#"CREATE TABLE IF NOT EXISTS cars(id INTEGER PRIMARY KEY,name TEXT NOT NULL,plate TEXT,vin TEXT,note TEXT); CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY,car_id INTEGER NOT NULL REFERENCES cars(id),date TEXT NOT NULL,kind TEXT NOT NULL,category TEXT NOT NULL,cents INTEGER NOT NULL,party TEXT,note TEXT); CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,UNIQUE(kind,name));CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS addresses(id INTEGER PRIMARY KEY,name TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);CREATE UNIQUE INDEX IF NOT EXISTS addresses_active_name ON addresses(name) WHERE active=1;"#).map_err(err)?;
             conn.execute_batch("CREATE TABLE IF NOT EXISTS drivers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,phone TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS driver_cars(driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,car_id INTEGER NOT NULL REFERENCES cars(id),PRIMARY KEY(driver_id,car_id));").map_err(err)?;
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS excel_import_sources(vin TEXT NOT NULL, order_number TEXT NOT NULL, fingerprint TEXT NOT NULL, entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, PRIMARY KEY(vin,order_number)); CREATE INDEX IF NOT EXISTS excel_import_sources_entry ON excel_import_sources(entry_id);").map_err(err)?;
             for (table, col, typ) in [
                 ("categories", "requires_route", "INTEGER NOT NULL DEFAULT 0"),
                 ("addresses", "region_code", "TEXT"),
