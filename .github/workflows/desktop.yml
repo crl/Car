@@ -6,6 +6,10 @@ on:
         description: Publish the configured version after all signed builds succeed
         type: boolean
         default: false
+      include_macos:
+        description: Also build macOS installers for Apple Silicon and Intel
+        type: boolean
+        default: false
   push:
     branches: [main]
     tags: ['v*']
@@ -20,16 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            bundle: app,dmg
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            bundle: app,dmg
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bundle: nsis
+        include: ${{ fromJSON(inputs.include_macos && '[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","bundle":"nsis"},{"os":"macos-latest","target":"aarch64-apple-darwin","bundle":"app,dmg"},{"os":"macos-latest","target":"x86_64-apple-darwin","bundle":"app,dmg"}]' || '[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","bundle":"nsis"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +80,7 @@ jobs:
           pattern: cheguanzhang-*
           path: release-assets
       - name: Prepare installers and complete update manifest
-        run: node scripts/release-manifest.js release-assets release-out
+        run: node scripts/release-manifest.js release-assets release-out ${{ inputs.include_macos && '--include-macos' || '' }}
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}

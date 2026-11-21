@@ -49,9 +49,11 @@ npm run desktop:build -- --config '{"bundle":{"createUpdaterArtifacts":false}}'
 2. Push the reviewed code to main. Push a matching `vX.Y.Z` tag, or run Desktop builds
    manually on the intended commit with `publish` enabled. Ordinary pushes and PRs
    build test installers without exposing the signing key.
-3. The three builds upload the Windows installer, its signature, both Mac DMGs and
-   signed `.app.tar.gz` bundles. The release job validates version agreement, tag,
-   platform completeness and signatures, and creates platform-specific URLs.
+3. The default build uploads only the Windows installer and its signature. To publish
+   macOS installers for a new version, manually run Desktop builds with both `publish`
+   and `include_macos` enabled before publishing that version via a tag. This includes
+   both Mac DMGs and signed `.app.tar.gz` bundles. The release job validates the
+   artifacts for the selected platforms and lists those platforms in `latest.json`.
 4. A draft release receives all assets and `latest.json` before becoming public and
    latest. Existing releases are never overwritten or deleted. If an upload fails,
    the draft is kept for inspection; remove the failed draft before rerunning that
