@@ -23,7 +23,18 @@ function carForm(id){
  const car=data.cars.find(car=>car.id===id)||{};
  const selected=new Set(carDrivers(car).map(driver=>driver.id));
  const drivers=(data.drivers||[]).map(driver=>`<label><input type="checkbox" name="driver_ids" value="${driver.id}" ${selected.has(driver.id)?'checked':''}><span>${esc(driver.name)}${driver.phone?' · '+esc(driver.phone):''}</span></label>`).join('')||'<p class="help">暂无司机，请先到司机管理新增。</p>';
- openForm(id?'编辑车辆':'录入汽车',field('车牌 *','plate',car.plate,true)+'<fieldset><legend>司机（可多选）</legend><div class="driver-choices">'+drivers+'</div></fieldset>'+field('备注','note',car.note),'/api/cars',id);
+ const search=(data.drivers||[]).length?'<input id="carDriverSearch" type="search" aria-label="搜索司机" placeholder="搜索姓名或手机号">':'';
+ openForm(id?'编辑车辆':'录入汽车',field('车牌 *','plate',car.plate,true)+'<fieldset class="car-driver-picker" aria-labelledby="carDriverLabel"><div class="car-driver-heading"><span id="carDriverLabel">司机（可多选）</span>'+search+'</div><div class="driver-choices">'+drivers+'</div><p id="carDriverNoResults" class="help" role="status" hidden>没有匹配的司机</p></fieldset>'+field('备注','note',car.note),'/api/cars',id);
+ $('carDriverSearch')?.addEventListener('input',event=>{
+  const query=event.currentTarget.value.trim().toLowerCase();
+  let hasMatch=false;
+  for(const option of $('fields').querySelectorAll('.driver-choices label')){
+   const matches=option.textContent.toLowerCase().includes(query);
+   option.hidden=!matches;
+   hasMatch||=matches;
+  }
+  $('carDriverNoResults').hidden=hasMatch;
+ });
  if(id){deletionContext={resource:'cars',id:car.id,message:`确定删除车辆 ${vehicleLabel(car)}？\n确认后删除车辆资料及其司机关联。`};$('deleteRecord').hidden=false;}
 
 }
@@ -45,7 +56,7 @@ function renderDrivers(){
 function renderDriverRows(){
  const q=$('driverSearch').value.trim().toLowerCase();
  const drivers=(data.drivers||[]).map(driver=>({driver,cars:data.cars.filter(car=>(driver.car_ids||[]).includes(car.id))}));
- $('driverRows').innerHTML=drivers.filter(({driver,cars})=>[driver.name,driver.phone,driver.note,...cars.map(vehicleLabel)].join(' ').toLowerCase().includes(q)).map(({driver,cars})=>`<tr><td>${esc(driver.name)}</td><td>${esc(driver.phone)||'—'}</td><td>${cars.map(car=>`<a class="vehicle-link" href="#/cars/${car.id}">${esc(vehicleLabel(car))}</a>`).join('、')||'—'}</td><td>${esc(driver.note)||'—'}</td><td>${isAdmin?`<button onclick="driverForm(${driver.id})">编辑</button><button class="danger" onclick="removeDriver(${driver.id})">删除</button>`:'只读'}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">'+(q?'没有匹配的司机':(isAdmin?'暂无司机，请新增司机':'暂无司机'))+'</td></tr>';
+ $('driverRows').innerHTML=drivers.filter(({driver,cars})=>[driver.name,driver.phone,driver.note,...cars.map(vehicleLabel)].join(' ').toLowerCase().includes(q)).map(({driver,cars})=>`<tr><td>${esc(driver.name)}</td><td>${esc(driver.phone)||'—'}</td><td>${cars.map(car=>`<a class="vehicle-link" href="#/cars/${car.id}">${esc(vehicleLabel(car))}</a>`).join('、')||'—'}</td><td>${esc(driver.note)}</td><td>${isAdmin?`<button onclick="driverForm(${driver.id})">编辑</button><button class="danger" onclick="removeDriver(${driver.id})">删除</button>`:'只读'}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">'+(q?'没有匹配的司机':(isAdmin?'暂无司机，请新增司机':'暂无司机'))+'</td></tr>';
  refreshTables();
 }
 function driverForm(id){
@@ -64,7 +75,32 @@ async function removeDriver(id){
 let deletionContext=null;
 let initialForm='',subview=null,toastTimer,returnFocus=null;
 const workspaceTemplate=document.querySelector('.workspace').innerHTML;
-let page,detailId;
+let page,detailId,vehicleReturn;
+const vehicleSources={'/':'车辆管理','/cars':'车辆管理','/entries':'收支账目','/drivers':'司机管理'};
+function captureVehicleSource(){
+ const inputs=['search','start','end','filter','driverSearch'].map(id=>[id,$(id)?.value]);
+ const scrollTop=document.scrollingElement?.scrollTop??0;
+ const filters=[vehicleProjectSelection,vehicleKindSelection,ledgerVehicleSelection,vehicleDriverSelection];
+ const routes={...vehicleRouteSelection};
+ const sort=[vehicleDateAscending,vehicleSortColumn,vehicleAmountAscending,overviewAmountSort,overviewAmountAscending];
+ const pagination=[vehiclePage,vehiclePageSize];
+ return {page,restore(){
+  [vehicleProjectSelection,vehicleKindSelection,ledgerVehicleSelection,vehicleDriverSelection]=filters;
+  Object.assign(vehicleRouteSelection,routes);
+  [vehicleDateAscending,vehicleSortColumn,vehicleAmountAscending,overviewAmountSort,overviewAmountAscending]=sort;
+  for(const [id,value] of inputs)if(value!==undefined&&$(id))$(id).value=value;
+  if(page==='/entries'){
+   [vehiclePage,vehiclePageSize]=pagination;
+   renderLedgerVehicleFilter();
+   renderKindFilters();
+   renderProjectFilters();
+   for(const side of ['start','end','party'])renderRouteFilters(side);
+   renderVehicleEntries(true);
+  }else if(page==='/drivers')renderDriverRows();
+  else{renderLedgerVehicleFilter();render()}
+  if(document.scrollingElement)document.scrollingElement.scrollTop=scrollTop;
+ }};
+}
 function mountRoute(hash){
  page=hash.slice(1)||'/cars';
  const detailMatch=page.match(/^\/cars\/(\d+)$/);
@@ -82,6 +118,11 @@ function mountRoute(hash){
  if(page==='/'||page==='/cars'){installLedgerVehicleFilter();installVehicleDriverFilter()}
 }
 function navigateWorkspace(hash){
+ const next=hash.slice(1)||'/cars';
+ const enteringDetail=/^\/cars\/\d+$/.test(next);
+ const source=!enteringDetail&&vehicleReturn?.page===next?vehicleReturn:null;
+ if(enteringDetail&&detailId===null)vehicleReturn=Object.hasOwn(vehicleSources,page)?captureVehicleSource():null;
+ else if(!enteringDetail)vehicleReturn=null;
  if($('modal').open)$('modal').close();
  subview=null;
  deletionContext=null;
@@ -91,6 +132,8 @@ function navigateWorkspace(hash){
  vehicleProjectSelection=vehicleKindSelection=ledgerVehicleSelection=vehicleDriverSelection=null;
  for(const side of ['start','end','party'])vehicleRouteSelection[side]=null;
  vehicleDateAscending=false;
+ vehicleSortColumn='date';
+ vehicleAmountAscending=false;
  vehiclePage=1;
  vehiclePageSize=20;
  overviewAmountSort=null;
@@ -98,6 +141,8 @@ function navigateWorkspace(hash){
  document.querySelector('.workspace').innerHTML=workspaceTemplate;
  mountRoute(hash);
  renderLoadedRoute();
+ if(source)source.restore();
+ else if(document.scrollingElement)document.scrollingElement.scrollTop=0;
 }
 function notify(message){const toast=$('toast');clearTimeout(toastTimer);toast.textContent=message;if(toast.matches(':popover-open'))toast.hidePopover();toast.showPopover();toastTimer=setTimeout(()=>{toast.hidePopover();toast.textContent=''},3500)}
 function formState(){return JSON.stringify([...new FormData($('form')).entries()])}
@@ -192,20 +237,35 @@ function restoreEntry(){let saved=subview;subview=null;$('fields').innerHTML=sav
 function renderVehicleDetail(){
  const car=data.cars.find(c=>c.id===detailId);
  $('pageTitle').textContent=car?vehicleLabel(car):'车辆不存在';
- document.querySelector('.header-actions').innerHTML='<a class="link secondary" href="#/cars">返回车辆列表</a>'+(car&&isAdmin?'<button onclick="entryForm()">＋ 记一笔账</button>':'');
+ const source=vehicleReturn?.page||'/cars';
+ const sourceLink=`<a href="#${source}">${vehicleSources[source]}</a>`;
+ let breadcrumb=document.querySelector('.vehicle-breadcrumb');
+ if(!breadcrumb){
+  $('pageTitle').insertAdjacentHTML('beforebegin','<nav class="vehicle-breadcrumb" aria-label="面包屑"></nav>');
+  breadcrumb=document.querySelector('.vehicle-breadcrumb');
+ }
+ breadcrumb.innerHTML=`${sourceLink}<span aria-hidden="true">›</span><span aria-current="page">${esc($('pageTitle').textContent)}</span>`;
+ document.querySelector('.header-actions').innerHTML=car&&isAdmin?'<button onclick="entryForm()">＋ 记一笔账</button>':'';
  if(!car){document.querySelector('main').innerHTML='<section class="empty"><h2>车辆不存在</h2><p>这台车辆不存在，请返回车辆列表选择。</p><a href="#/cars">返回车辆列表</a></section>';return}
  let all=ledgerScope(),income=sum(all,'收入'),expense=sum(all,'支出');
  const from=$('start')?.value||'',to=$('end')?.value||'';
- document.querySelector('main').innerHTML='<p id="message" role="status"></p><section class="vehicle-profile"><h2>'+esc(vehicleLabel(car))+'</h2><div class="profile-grid"><div><small>车牌</small><strong>'+esc(car.plate||'未填写')+'</strong></div><div><small>司机</small><strong>'+esc(carDrivers(car).map(driver=>driver.name).join('、'))+'</strong></div><div><small>备注</small><strong>'+esc(car.note||'无备注')+'</strong></div></div></section><div class="stats detail-stats">'+[['累计收入',income],['累计支出',expense],['收支差额',income-expense]].map(([label,value])=>'<div class="stat"><span class="muted">'+label+'</span><strong>¥ '+money(value)+'</strong></div>').join('')+'</div><section><div class="toolbar"><h2>单车收支明细</h2><span class="section-note">仅显示当前车辆</span><input id="start" type="date" aria-label="开始日期" onchange="renderVehicleEntries()"><span>至</span><input id="end" type="date" aria-label="结束日期" onchange="renderVehicleEntries()"><button class="text-button" onclick="clearFilters()">清空筛选</button></div><p id="subtotal"></p><div class="scroll"><table class="vehicle-entries"><thead><tr>'+['日期','收支','项目','金额','起点 → 终点','往来方','操作'].map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody id="vehicleEntries"></tbody></table></div><p class="help">收支差额为已录入收入减支出，不代表会计利润。</p></section>';
+ document.querySelector('main').innerHTML='<p id="message" role="status"></p><section class="vehicle-profile"><div class="profile-grid"><div><small>车牌</small><strong>'+esc(car.plate||'未填写')+'</strong></div><div><small>司机</small><strong>'+esc(carDrivers(car).map(driver=>driver.name).join('、'))+'</strong></div><div><small>备注</small><strong>'+esc(car.note||'无备注')+'</strong></div></div></section><div class="stats detail-stats">'+[['累计收入',income],['累计支出',expense],['收支差额',income-expense]].map(([label,value])=>'<div class="stat"><span class="muted">'+label+'</span><strong>¥ '+money(value)+'</strong></div>').join('')+'</div><section><div class="toolbar"><h2>单车收支明细</h2><span class="section-note">仅显示当前车辆</span><input id="start" type="date" aria-label="开始日期" onchange="renderVehicleEntries()"><span>至</span><input id="end" type="date" aria-label="结束日期" onchange="renderVehicleEntries()"><button class="text-button" onclick="clearFilters()">清空筛选</button></div><p id="subtotal"></p><div class="scroll"><table class="vehicle-entries"><thead><tr>'+['日期','收支','项目','金额','起点 → 终点','往来方','操作'].map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody id="vehicleEntries"></tbody></table></div><p class="help">收支差额为已录入收入减支出，不代表会计利润。</p></section>';
  $('start').value=from;$('end').value=to;installLedgerCalendar();installProjectHeaderFilter();installKindHeaderFilter();installRouteHeaderFilters();renderProjectFilters();renderVehicleEntries();
 }
 let currentVehicleRows=[];
-let vehicleDateAscending=false;
+let vehicleDateAscending=false,vehicleSortColumn='date',vehicleAmountAscending=false;
 let vehiclePage=1,vehiclePageSize=20;
 function renderVehicleEntries(keepPage=false){
  if(!keepPage)vehiclePage=1;
  const all=ledgerScope(),from=$('start').value,to=$('end').value;
- const rows=all.filter(e=>(page!=='/entries'||ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(e.car_id)))&&(!from||e.date>=from)&&(!to||e.date<=to)&&(vehicleKindSelection===null||vehicleKindSelection.has(e.kind))&&(vehicleProjectSelection===null||vehicleProjectSelection.has(projectKey(e)))&&routeMatches(e)).sort((a,b)=>vehicleDateAscending?(a.date.localeCompare(b.date)||a.id-b.id):(b.date.localeCompare(a.date)||b.id-a.id));
+ const rows=all.filter(e=>(page!=='/entries'||ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(e.car_id)))&&(!from||e.date>=from)&&(!to||e.date<=to)&&(vehicleKindSelection===null||vehicleKindSelection.has(e.kind))&&(vehicleProjectSelection===null||vehicleProjectSelection.has(projectKey(e)))&&routeMatches(e)).sort((a,b)=>{
+  if(vehicleSortColumn==='amount'){
+   const amountDifference=a.cents-b.cents;
+   if(amountDifference)return vehicleAmountAscending?amountDifference:-amountDifference;
+   return b.date.localeCompare(a.date)||b.id-a.id;
+  }
+  return vehicleDateAscending?(a.date.localeCompare(b.date)||a.id-b.id):(b.date.localeCompare(a.date)||b.id-a.id);
+ });
  updateVehicleDateHeader();
  currentVehicleRows=rows;
  const pageCount=Math.max(1,Math.ceil(rows.length/vehiclePageSize));vehiclePage=Math.min(vehiclePage,pageCount);
@@ -292,8 +352,29 @@ function renderVehicleTotals(income,expense){
 }
 async function exportVehicleRows(){if(!currentVehicleRows.length){await alertDialog('当前没有可导出的收支明细，请先记账或调整筛选条件。');return}try{const car=data.cars.find(c=>c.id===detailId);const result=await service.call('export_ledger',{ids:currentVehicleRows.map(e=>e.id),filename:(detailId===null?'All-vehicles':vehicleLabel(car))+'-收支明细.xlsx'});if(!result.cancelled)notify('Excel明细已导出：'+result.path)}catch(e){notify('导出失败：'+String(e))}}
 
-function updateVehicleDateHeader(){const th=document.querySelector('.vehicle-entries th:first-child');if(!th)return;th.setAttribute('aria-sort',vehicleDateAscending?'ascending':'descending');th.innerHTML=`<button type="button" class="project-header-button" onclick="toggleVehicleDateSort()" aria-label="日期排序，当前${vehicleDateAscending?'由早到晚':'由晚到早'}，点击切换">日期 ${vehicleDateAscending?'↑':'↓'}</button>`}
-function toggleVehicleDateSort(){vehicleDateAscending=!vehicleDateAscending;renderVehicleEntries()}
+function updateVehicleDateHeader(){
+ const headers=document.querySelectorAll('.vehicle-entries thead th');
+ const amountHeader=[...headers].find(th=>th.dataset.ledgerAmount!==undefined||th.textContent==='金额');
+ if(amountHeader)amountHeader.dataset.ledgerAmount='';
+ for(const [header,column,title,ascending] of [[headers[0],'date','日期',vehicleDateAscending],[amountHeader,'amount','金额',vehicleAmountAscending]]){
+  if(!header)continue;
+  const active=vehicleSortColumn===column;
+  if(active)header.setAttribute('aria-sort',ascending?'ascending':'descending');
+  else header.removeAttribute('aria-sort');
+  header.innerHTML=`<button type="button" class="project-header-button" onclick="toggleVehicleLedgerSort('${column}')" aria-label="${title}排序${active?(ascending?'，当前升序':'，当前降序'):''}">${title} ${active?(ascending?'↑':'↓'):'↕'}</button>`;
+ }
+}
+function toggleVehicleLedgerSort(column){
+ if(column==='date')return toggleVehicleDateSort();
+ vehicleAmountAscending=vehicleSortColumn==='amount'&&!vehicleAmountAscending;
+ vehicleSortColumn='amount';
+ renderVehicleEntries();
+}
+function toggleVehicleDateSort(){
+ vehicleDateAscending=vehicleSortColumn==='date'&&!vehicleDateAscending;
+ vehicleSortColumn='date';
+ renderVehicleEntries();
+}
 
 function installKindHeaderFilter(){
  document.querySelector('.vehicle-entries th:nth-child(2)').innerHTML='<button type="button" class="project-header-button" onclick="openKindFilter(this)" aria-haspopup="dialog" aria-expanded="false" aria-controls="kindPopover">收支 ▾</button>';
@@ -467,7 +548,7 @@ async function restoreLedgerBackup(){await nativeStorage('restore_ledger')}
 async function nativeStorage(command){if(storageBusy)return;setStorageBusy(true);try{const result=await service.call(command);$('settingsMessage').textContent=result.cancelled?'已取消':('操作成功：'+result.path+(result.safety_backup?' · 原账本备份：'+result.safety_backup:''));if(!result.cancelled&&command==='restore_ledger'){vehicleProjectSelection=null;vehicleKindSelection=null;ledgerVehicleSelection=null;vehicleDriverSelection=null;for(const side of ['start','end','party'])vehicleRouteSelection[side]=null;await load()}}catch(e){$('settingsMessage').textContent=String(e)}finally{setStorageBusy(false)}}
 $('settingsModal').addEventListener('cancel',e=>{if(storageBusy)e.preventDefault()});
 
-Object.assign(window,{openAccount,closeAccount,accountLogout,batchImport:()=>openExcelImport({service,esc,money,notify,load,bindCalendarInput,categories:data.categories}),deleteEditedRecord,customAddressForm,renderCustomAddressRows,renderVehicleDriverFilter,toggleAllVehicleDrivers,toggleVehicleDriver,openVehicleDriverFilter,driverForm,renderDrivers,renderDriverRows,removeDriver,addressForm,addressKey,addressLabel,allVehicleProjects,arrangeWorkspace,calendarToday,carForm,categoryForm,changeCalendarMonth,changeVehiclePageSize,chooseAddress,chooseCalendarDay,clearErrors,clearFilters,closeRegion,closeSiteSettings,collapseRegionTree,colorBalances,confirmRegion,downloadLedgerBackup,editLedgerEntry,entryForm,expandRegionNode,expandRegionNodeData,exportVehicleOverview,exportVehicleRows,field,filterCategories,formState,goVehiclePage,hideSuggestions,inlineAddress,installKindHeaderFilter,installLedgerCalendar,installLedgerVehicleFilter,installProjectHeaderFilter,installRouteHeaderFilters,installVehicleOverviewDates,ledgerScope,ledgerVehicleChoices,load,locateRegion,nativeStorage,notify,openForm,openKindFilter,openLedgerCalendar,openLedgerVehicleFilter,openProjectFilter,openRegion,openRegionTree,openRouteFilter,openSiteSettings,options,refreshAddresses,refreshTables,regionChildData,regionChildren,regionFetch,regionNodeMarkup,removeAddress,removeCategory,render,renderAddressRows,renderAddresses,renderAllLedger,renderCategories,renderKindFilters,renderLedgerCalendar,renderLedgerVehicleFilter,renderProjectFilters,renderRouteFilters,renderVehicleDetail,renderVehicleEntries,renderVehicleOverviewTotals,renderVehiclePagination,renderVehicleTotals,requestClose,restoreEntry,restoreLedgerBackup,routeFields,routeMatches,routeValue,searchRegions,sectionFields,selectRegion,setKind,setStorageBusy,showFieldError,sortVehicleOverview,suggest,swapRoute,syncCategories,syncRoute,toggleAllKinds,toggleAllLedgerVehicles,toggleAllRoutes,toggleKind,toggleLedgerVehicle,toggleOverviewAmountSort,toggleRoute,toggleVehicleDateSort,toggleVehicleProject,updateProjectHeader,updateVehicleDateHeader,vehicleLabel,vehicleOverviewEntries,vehicleOverviewFilteredRows,vehicleProjects,vehicleRouteChoices});
+Object.assign(window,{openAccount,closeAccount,accountLogout,batchImport:()=>openExcelImport({service,esc,money,notify,load,bindCalendarInput,categories:data.categories}),deleteEditedRecord,customAddressForm,renderCustomAddressRows,renderVehicleDriverFilter,toggleAllVehicleDrivers,toggleVehicleDriver,openVehicleDriverFilter,driverForm,renderDrivers,renderDriverRows,removeDriver,addressForm,addressKey,addressLabel,allVehicleProjects,arrangeWorkspace,calendarToday,carForm,categoryForm,changeCalendarMonth,changeVehiclePageSize,chooseAddress,chooseCalendarDay,clearErrors,clearFilters,closeRegion,closeSiteSettings,collapseRegionTree,colorBalances,confirmRegion,downloadLedgerBackup,editLedgerEntry,entryForm,expandRegionNode,expandRegionNodeData,exportVehicleOverview,exportVehicleRows,field,filterCategories,formState,goVehiclePage,hideSuggestions,inlineAddress,installKindHeaderFilter,installLedgerCalendar,installLedgerVehicleFilter,installProjectHeaderFilter,installRouteHeaderFilters,installVehicleOverviewDates,ledgerScope,ledgerVehicleChoices,load,locateRegion,nativeStorage,notify,openForm,openKindFilter,openLedgerCalendar,openLedgerVehicleFilter,openProjectFilter,openRegion,openRegionTree,openRouteFilter,openSiteSettings,options,refreshAddresses,refreshTables,regionChildData,regionChildren,regionFetch,regionNodeMarkup,removeAddress,removeCategory,render,renderAddressRows,renderAddresses,renderAllLedger,renderCategories,renderKindFilters,renderLedgerCalendar,renderLedgerVehicleFilter,renderProjectFilters,renderRouteFilters,renderVehicleDetail,renderVehicleEntries,renderVehicleOverviewTotals,renderVehiclePagination,renderVehicleTotals,requestClose,restoreEntry,restoreLedgerBackup,routeFields,routeMatches,routeValue,searchRegions,sectionFields,selectRegion,setKind,setStorageBusy,showFieldError,sortVehicleOverview,suggest,swapRoute,syncCategories,syncRoute,toggleAllKinds,toggleAllLedgerVehicles,toggleAllRoutes,toggleKind,toggleLedgerVehicle,toggleOverviewAmountSort,toggleRoute,toggleVehicleDateSort,toggleVehicleLedgerSort,toggleVehicleProject,updateProjectHeader,updateVehicleDateHeader,vehicleLabel,vehicleOverviewEntries,vehicleOverviewFilteredRows,vehicleProjects,vehicleRouteChoices});
 window.frontendDirty=()=>$("modal").open&&(formState()!==initialForm||Boolean(subview));
 window.frontendBusy=()=>storageBusy||$("save").disabled;
 mountRoute(location.hash);
