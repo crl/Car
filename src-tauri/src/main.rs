@@ -5,6 +5,7 @@ mod regions;
 #[cfg(test)]
 mod update_tests;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -21,6 +22,9 @@ struct DesktopState {
     busy: AtomicUsize,
     allow_exit: AtomicBool,
     updating: AtomicBool,
+    admin_password_hash: Mutex<String>,
+    authenticated: AtomicBool,
+    session_file: PathBuf,
 }
 type Shared = Arc<DesktopState>;
 struct Busy(Shared);
@@ -114,12 +118,57 @@ async fn read_data(state: tauri::State<'_, Shared>) -> Result<Value, String> {
     })
     .await
 }
+fn password_hash(password: &str) -> String {
+    format!("{:x}", Sha256::digest(password.as_bytes()))
+}
+#[tauri::command]
+fn account_status(state: tauri::State<'_, Shared>) -> Value {
+    json!({"authenticated":state.authenticated.load(Ordering::SeqCst)})
+}
+#[tauri::command]
+fn login(state: tauri::State<'_, Shared>, username: String, password: String) -> Result<(), String> {
+    let hash = state.admin_password_hash.lock().map_err(|_| "账号状态不可用")?;
+    if username != "root" || password_hash(&password) != *hash {
+        return Err("账号或密码错误".into());
+    }
+    std::fs::write(&state.session_file, "admin").map_err(|e| e.to_string())?;
+    state.authenticated.store(true, Ordering::SeqCst);
+    Ok(())
+}
+#[tauri::command]
+fn logout(state: tauri::State<'_, Shared>) -> Result<(), String> {
+    match std::fs::remove_file(&state.session_file) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("无法退出登录：{error}")),
+    }
+    state.authenticated.store(false, Ordering::SeqCst);
+    Ok(())
+}
+#[tauri::command]
+fn change_password(state: tauri::State<'_, Shared>, current_password: String, new_password: String) -> Result<(), String> {
+    if !state.authenticated.load(Ordering::SeqCst) { return Err("请先以管理员身份登录".into()); }
+    if new_password.trim().len() < 6 { return Err("新密码至少需要 6 位".into()); }
+    let mut hash = state.admin_password_hash.lock().map_err(|_| "账号状态不可用")?;
+    if password_hash(&current_password) != *hash { return Err("当前密码错误".into()); }
+    let next_hash = password_hash(&new_password);
+    let path = state.path.with_file_name("admin-password.sha256");
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("密码保存路径无效")?)
+        .map_err(|e| e.to_string())?;
+    use std::io::Write;
+    file.write_all(next_hash.as_bytes()).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(path).map_err(|e| e.to_string())?;
+    *hash = next_hash;
+    Ok(())
+}
 #[tauri::command]
 async fn save_record(
     state: tauri::State<'_, Shared>,
     resource: String,
     data: Value,
 ) -> Result<Value, String> {
+    if !state.authenticated.load(Ordering::SeqCst) { return Err("游客模式为只读，请登录管理员账号".into()); }
     task(state.inner().clone(), move |s| {
         ledger::Ledger::open(&s.path)?.save(&resource, data)
     })
@@ -145,6 +194,7 @@ async fn import_excel(
     options: ledger::excel_import::ImportOptions,
     expected: Option<Value>,
 ) -> Result<Value, String> {
+    if !state.authenticated.load(Ordering::SeqCst) { return Err("游客模式为只读，请登录管理员账号".into()); }
     task(state.inner().clone(), move |s| {
         ledger::Ledger::open(&s.path)?.import_excel(&path, options, expected)
     }).await
@@ -186,6 +236,7 @@ async fn restore_ledger(
     app: tauri::AppHandle,
     state: tauri::State<'_, Shared>,
 ) -> Result<Value, String> {
+    if !state.authenticated.load(Ordering::SeqCst) { return Err("游客模式为只读，请登录管理员账号".into()); }
     task(state.inner().clone(),move|s|{
  let Some(file)=app.dialog().file().add_filter("SQLite 账本备份",&["db","sqlite","sqlite3"]).blocking_pick_file() else{return Ok(json!({"cancelled":true}))};
  let source=picked_path(file)?;
@@ -283,12 +334,25 @@ fn main() {
                 .map(PathBuf::from)
                 .unwrap_or(folder);
             std::fs::create_dir_all(&folder)?;
+            let password_file = folder.join("admin-password.sha256");
+            let stored_hash = if password_file.exists() {
+                std::fs::read_to_string(&password_file)?.trim().to_owned()
+            } else {
+                let initial = password_hash("root");
+                std::fs::write(&password_file, &initial)?;
+                initial
+            };
+            let session_file = folder.join("admin-session");
+            let authenticated = session_file.exists();
             app.manage(Arc::new(DesktopState {
                 path: folder.join("cars.db"),
                 operations: Mutex::new(()),
                 busy: AtomicUsize::new(0),
                 allow_exit: AtomicBool::new(false),
                 updating: AtomicBool::new(false),
+                admin_password_hash: Mutex::new(stored_hash),
+                authenticated: AtomicBool::new(authenticated),
+                session_file,
             }));
             Ok(())
         })
@@ -303,6 +367,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_status,
+            account_status,
+            login,
+            logout,
+            change_password,
             initialize_ledger,
             read_data,
             save_record,

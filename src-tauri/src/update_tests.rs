@@ -9,6 +9,9 @@ fn update_reservation_rejects_active_work_and_blocks_new_ledger_tasks() {
         busy: AtomicUsize::new(1),
         allow_exit: AtomicBool::new(false),
         updating: AtomicBool::new(false),
+        admin_password_hash: Mutex::new(password_hash("root")),
+        authenticated: AtomicBool::new(false),
+        session_file: dir.path().join("admin-session"),
     });
     assert!(reserve_update(&state).is_err());
     assert!(!state.allow_exit.load(Ordering::SeqCst));

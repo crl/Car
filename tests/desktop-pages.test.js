@@ -7,12 +7,53 @@ import {JSDOM} from 'jsdom';
 const html=readFileSync(new URL('../index.html',import.meta.url),'utf8');
 const source=readFileSync(new URL('../app.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'');
 function fixture(){return {drivers:[{id:1,name:'张师傅',phone:'13800138000',note:'夜班',car_ids:[1,2]},{id:2,name:'李师傅',phone:'',note:'',car_ids:[]}],cars:[{id:1,plate:'测试001',name:'旧车型',vin:'VIN1',note:'备注'},{id:2,plate:'测试002',name:'',vin:'',note:''}],categories:[{id:1,kind:'收入',name:'运费',active:1,requires_route:1},{id:2,kind:'支出',name:'油费',active:1,requires_route:0}],addresses:[{id:1,name:'上海',detail:'',active:1},{id:2,name:'杭州',detail:'',active:1}],entries:Array.from({length:81},(_,i)=>({id:i+1,car_id:i===80?2:1,date:'2026-10-'+String(25+i%7).padStart(2,'0'),kind:i%2?'支出':'收入',category:i%2?'油费':'运费',cents:10000,start_address_id:i%3?1:null,end_address_id:i%3?2:null,start_address:i%3?'上海':null,end_address:i%3?'杭州':null,start_address_detail:i===1?'小区602室':'',end_address_detail:i===1?'园区8号':'',party:i%2?'油站':'客户',note:'备注'}))}}
-async function page(route){const dom=new JSDOM(html,{url:'http://tauri.localhost/#'+route,runScripts:'outside-only'}),w=dom.window,calls=[],data=fixture();
+async function page(route,{admin=true,empty=false}={}){const dom=new JSDOM(html,{url:'http://tauri.localhost/#'+route,runScripts:'outside-only'}),w=dom.window,calls=[],data=fixture();
+ if(empty){data.cars=[];data.entries=[]}
+ let accountListener;
+ w.onAccountChange=listener=>{accountListener=listener};
+ w.applyAccountStatus=value=>accountListener(value);
+ w.accountReads=0;
+ w.refreshAccount=async()=>{w.accountReads++;accountListener(admin)};
  w.pinyin=pinyin;w.service={request:async()=>({ok:true,json:async()=>structuredClone(data)}),call:async(cmd,args)=>{calls.push({cmd,args});return {cancelled:true}}};w.confirmDialog=async()=>true;w.alertDialog=async()=>{};
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'))};
  const matches=w.Element.prototype.matches;w.Element.prototype.matches=function(s){return s===':popover-open'?this.hasAttribute('data-open'):matches.call(this,s)};
  w.HTMLElement.prototype.showPopover=function(){this.setAttribute('data-open','')};w.HTMLElement.prototype.hidePopover=function(){this.removeAttribute('data-open')};
  await vm.runInContext('(async()=>{'+source+'})()',dom.getInternalVMContext());return {dom,w,calls,close:()=>w.close()};}
+test('guest search and repeated ledger loads do not refresh account status',async()=>{
+ const h=await page('/cars',{admin:false});
+ try{
+  const {w}=h,d=w.document;
+  d.querySelector('#search').value='测试001';
+  w.render();
+  assert.equal(d.querySelector('#cars .vehicle-link').textContent,'测试001');
+  await w.load();
+  assert.equal(w.accountReads,1);
+ }finally{h.close()}
+});
+test('login can be retried and immediately enables creation on an empty ledger',async()=>{
+ const h=await page('/cars',{admin:false,empty:true});
+ try{
+  const {w}=h,d=w.document;
+  w.openAccount();
+  assert.equal(d.querySelector('#accountModal').open,true);
+  w.closeAccount();
+  assert.equal(d.querySelector('#accountModal').open,false);
+  w.openAccount();
+  const form=d.querySelector('#loginForm');
+  let authenticated=false;
+  w.service.call=async(command)=>{
+   assert.equal(command,'login');
+   if(!authenticated)throw Error('账号或密码错误');
+  };
+  await form.onsubmit({preventDefault(){},currentTarget:form});
+  assert.match(d.querySelector('#accountMessage').textContent,/密码错误/);
+  authenticated=true;
+  w.refreshAccount=async()=>w.applyAccountStatus(true);
+  await form.onsubmit({preventDefault(){},currentTarget:form});
+  assert.equal(d.querySelector('#accountModal').open,false);
+  assert.match(d.querySelector('.header-actions').textContent,/新增车辆/);
+ }finally{h.close()}
+});
 test('all desktop routes render and expose inline handlers',async()=>{for(const route of ['/cars','/entries','/cars/1','/categories','/addresses','/drivers','/cars/999']){const h=await page(route);try{assert.doesNotMatch(h.w.document.querySelector('main').textContent,/读取失败/);assert.equal(typeof h.w.entryForm,'function');assert.equal(typeof h.w.openSiteSettings,'function');if(route==='/cars/999')assert.match(h.w.document.querySelector('main').textContent,/车辆不存在/)}finally{h.close()}}});
 test('ledger pagination, intersecting filters, clear and export use all filtered rows',async()=>{const h=await page('/entries'),w=h.w,d=w.document;try{
  assert.equal(d.querySelectorAll('#vehicleEntries tr').length,20);
@@ -390,5 +431,18 @@ test('entry calendar changes the form date without changing list filters or losi
   d.querySelector('#start').click();w.chooseCalendarDay('2026-10-31');
   assert.equal(panel.parentElement,d.body);
   assert.match(d.querySelector('#subtotal').textContent,/11 笔/);
+ }finally{h.close()}
+});
+
+test('workspace navigation preserves the sidebar and account node',async()=>{
+ const h=await page('/cars');
+ try{
+  const {w}=h,d=w.document,account=d.querySelector('#accountButton');
+  for(const route of ['/entries','/addresses','/drivers','/categories','/cars/1','/cars']){
+   w.navigateWorkspace('#'+route);
+   assert.equal(d.querySelector('#accountButton'),account);
+   assert.ok(d.querySelector('aside nav a[aria-current="page"]'));
+  }
+  assert.equal(w.accountReads,1);
  }finally{h.close()}
 });

@@ -19,6 +19,10 @@ export const service={
     return {ok:true,json:async()=>value};
   }
 };
+export let isAdmin=false;
+const accountListeners=new Set();
+export function onAccountChange(listener){accountListeners.add(listener);return()=>accountListeners.delete(listener)}
+export async function refreshAccount(){const status=await service.call('account_status');isAdmin=!!status.authenticated;document.body.classList.toggle('guest-mode',!isAdmin);const name=document.querySelector('#accountName'),avatar=document.querySelector('#accountAvatar'),hint=document.querySelector('#accountHint');if(name)name.textContent=isAdmin?'管理员':'游客';if(avatar)avatar.textContent=isAdmin?'管':'游';if(hint)hint.textContent=isAdmin?'已登录':'只读模式';const button=document.querySelector('#accountButton');if(button){button.removeAttribute('data-account-pending');button.disabled=false;}accountListeners.forEach(listener=>listener(isAdmin));}
 let dialogQueue=Promise.resolve();
 export function confirmDialog(message){const next=dialogQueue.then(()=>new Promise(resolve=>{const d=document.createElement('dialog');d.className='frontend-dialog frontend-confirm';const p=document.createElement('p');p.textContent=message;d.append(p);for(const [text,value] of [['取消',false],['确定',true]]){const b=document.createElement('button');b.textContent=text;b.onclick=()=>{d.close();d.remove();resolve(value)};d.append(b)}d.addEventListener('cancel',e=>{e.preventDefault();d.remove();resolve(false)});document.body.append(d);d.showModal()}));dialogQueue=next.catch(()=>{});return next}
 export async function alertDialog(message){await confirmDialog(message)}
@@ -35,7 +39,8 @@ window.addEventListener('hashchange',async()=>{
   if(pending||updater?.busy||window.frontendBusy?.())return;
   if(window.frontendDirty?.()&&!await confirmDialog('还有未保存的内容，确定放弃修改？'))return;
   if(pending||updater?.busy||window.frontendBusy?.())return;
-  acceptedHash=next;history.replaceState(null,'',acceptedHash);location.reload();
+  if(!window.navigateWorkspace)return;
+  acceptedHash=next;history.replaceState(null,'',acceptedHash);window.navigateWorkspace(acceptedHash);
  }finally{routing=false}
 });
 async function boot(){try{
