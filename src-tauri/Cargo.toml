@@ -1,6 +1,6 @@
 [package]
 name = "cheguanzhang"
-version = "0.1.7"
+version = "0.1.8"
 description = "运管家 — 本地车辆收支管理"
 authors = ["crl"]
 edition = "2021"

@@ -198,9 +198,9 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
     <div class="modal-head"><h2 id="excel-import-title">批量导入</h2></div>
     <div class="modal-body">
       <form class="import-fields">
-        <fieldset class="import-sheets">
-          <legend>子表</legend>
+        <fieldset class="import-sheets" aria-labelledby="importSheetsTitle">
           <div class="import-sheet-tools">
+            <span id="importSheetsTitle" class="import-sheet-title muted">子表</span>
             <input type="search" aria-label="搜索子表" placeholder="搜索子表" data-sheet-search>
             <button type="button" class="secondary" data-select-sheets>全选</button>
             <button type="button" class="secondary" data-clear-sheets>全不选</button>

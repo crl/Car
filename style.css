@@ -152,10 +152,10 @@ main section:has(>table)>#subtotal,main section:has(>.scroll>table)>#subtotal{ma
 .excel-import .modal-body{overflow:auto}
 .excel-import .import-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
 .excel-import .import-sheets{grid-column:1/-1;min-width:0;margin:0;padding:0;border:0}
-.excel-import .import-sheets legend{margin-bottom:7px;padding:0;font-size:13px;font-weight:550}
-.excel-import .import-sheet-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
+.excel-import .import-sheet-tools{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.excel-import .import-sheet-title{flex:none;margin-inline-end:auto;font-size:13px;font-weight:550}
 .excel-import .import-sheet-tools input{flex:1 1 150px;width:auto;max-width:220px;min-width:0;min-height:34px;padding:6px 10px}
-.excel-import .import-sheet-tools button{min-height:34px;padding:6px 12px;font-size:13px}
+.excel-import .import-sheet-tools button{flex:none;min-height:34px;padding:6px 12px;font-size:13px}
 .excel-import .import-sheet-choices{display:flex;flex-wrap:wrap;gap:8px;max-height:160px;overflow:auto;padding:3px}
 .excel-import .import-sheet-choices span{overflow-wrap:anywhere}
 .excel-import .import-summaries{margin:0 0 12px;padding-left:20px}
