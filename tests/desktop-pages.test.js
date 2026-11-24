@@ -1,4 +1,4 @@
-import {pinyin} from 'pinyin-pro';
+import {createTextMatcher} from '../text-search.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -14,7 +14,7 @@ async function page(route,{admin=true,empty=false}={}){const dom=new JSDOM(html,
  w.applyAccountStatus=value=>accountListener(value);
  w.accountReads=0;
  w.refreshAccount=async()=>{w.accountReads++;accountListener(admin)};
- w.pinyin=pinyin;w.service={request:async()=>({ok:true,json:async()=>structuredClone(data)}),call:async(cmd,args)=>{calls.push({cmd,args});return {cancelled:true}}};w.confirmDialog=async()=>true;w.alertDialog=async()=>{};
+ w.createTextMatcher=createTextMatcher;w.service={request:async()=>({ok:true,json:async()=>structuredClone(data)}),call:async(cmd,args)=>{calls.push({cmd,args});return {cancelled:true}}};w.confirmDialog=async()=>true;w.alertDialog=async()=>{};
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'))};
  const matches=w.Element.prototype.matches;w.Element.prototype.matches=function(s){return s===':popover-open'?this.hasAttribute('data-open'):matches.call(this,s)};
  w.HTMLElement.prototype.showPopover=function(){this.setAttribute('data-open','')};w.HTMLElement.prototype.hidePopover=function(){this.removeAttribute('data-open')};
@@ -28,6 +28,58 @@ test('guest search and repeated ledger loads do not refresh account status',asyn
   assert.equal(d.querySelector('#cars .vehicle-link').textContent,'测试001');
   await w.load();
   assert.equal(w.accountReads,1);
+ }finally{h.close()}
+});
+
+test('vehicle search and driver pickers match full pinyin and surname initials', async () => {
+ const h=await page('/cars'),w=h.w,d=w.document,state=fixture();
+ try{
+  state.cars[0].plate='沪A12345';
+  state.drivers[0].name='单师傅';
+  state.drivers[0].car_ids=[1];
+  w.service.request=async()=>({ok:true,json:async()=>state});await w.load();
+  for(const query of ['hua12345','HA12345','ssf 12345','单师傅']){
+   d.querySelector('#search').value=query;w.render();
+   assert.deepEqual([...d.querySelectorAll('#cars .vehicle-link')].map(link=>link.textContent),['沪A12345'],query);
+   assert.match(d.querySelector('#vehicleOverviewTotals').textContent,/1 辆/);
+  }
+  d.querySelector('#vehicleDriverSearch').value='shan 138';w.renderVehicleDriverFilter();
+  assert.match(d.querySelector('#vehicleDriverChoices').textContent,/单师傅/);
+  assert.doesNotMatch(d.querySelector('#vehicleDriverChoices').textContent,/李师傅/);
+  w.carForm(1);
+  const search=d.querySelector('#carDriverSearch');
+  search.value='SSF';search.dispatchEvent(new w.Event('input',{bubbles:true}));
+  assert.deepEqual([...d.querySelectorAll('.driver-choices label:not([hidden]) input')].map(box=>[box.value,box.checked]),[['1',true]]);
+ }finally{h.close()}
+});
+
+test('driver, category, address and ledger filters match phonetic names in their original fields', async () => {
+ const checks=[
+  ['/drivers', '#driverSearch', 'zsf 138', 'renderDriverRows', '#driverRows', '曾师傅', '李师傅'],
+  ['/addresses', '#addressSearch', 'SH', 'renderAddressRows', '#addressRows', '上海', '杭州'],
+  ['/addresses', '#customAddressSearch', 'hz cangku 602', 'renderCustomAddressRows', '#customAddressRows', '杭州仓库', '上海'],
+  ['/entries', '#startRouteSearch', 'shanghai', 'renderRouteFilters', '#startRouteChoices', '上海', '无', 'start'],
+  ['/entries', '#endRouteSearch', 'hz', 'renderRouteFilters', '#endRouteChoices', '杭州', '无', 'end'],
+  ['/entries', '#partyRouteSearch', 'KH', 'renderRouteFilters', '#partyRouteChoices', '客户', '油站', 'party'],
+  ['/entries', '#ledgerVehicleSearch', 'ha12345', 'renderLedgerVehicleFilter', '#ledgerVehicleChoices', '沪A12345', '测试002'],
+ ];
+ for(const [route,field,query,render,results,expected,excluded,side] of checks){
+  const h=await page(route),w=h.w,d=w.document,state=fixture();
+  try{
+   state.drivers[0].name='曾师傅';state.cars[0].plate='沪A12345';
+   state.addresses[0].region_code='310000';state.addresses[1].name='杭州仓库';state.addresses[1].detail='小区602室';
+   w.service.request=async()=>({ok:true,json:async()=>state});await w.load();
+   d.querySelector(field).value=query;w[render](side);
+   assert.ok(d.querySelector(results).textContent.includes(expected),field);
+   assert.ok(!d.querySelector(results).textContent.includes(excluded),field);
+  }finally{h.close()}
+ }
+ const h=await page('/categories');
+ try{
+  h.w.filterCategories('yunfei',0);
+  assert.equal(h.w.document.querySelector('#category-group-0 tbody tr').hidden,false);
+  h.w.filterCategories('YF',1);
+  assert.equal(h.w.document.querySelector('#category-group-1 tbody tr').hidden,false);
  }finally{h.close()}
 });
 test('login can be retried and immediately enables creation on an empty ledger',async()=>{

@@ -1,4 +1,6 @@
-function installPlateFilter(root, entries, esc, money) {
+import { createTextMatcher } from './text-search.js';
+
+function installPlateFilter(root, entries, showSheet, esc, money) {
   const panel = root.querySelector('#importPlateFilter');
   const buttons = root.querySelectorAll('[aria-controls="importPlateFilter"]');
   const search = panel.querySelector('input');
@@ -14,14 +16,14 @@ function installPlateFilter(root, entries, esc, money) {
       button.classList.toggle('is-filtered', !all);
     }
     body.innerHTML = entries.filter(entry => selected.has(entry.plate)).map(entry =>
-      `<tr><td data-label="车牌">${esc(entry.plate)}</td><td data-label="起点 → 终点">${esc(entry.start)} → ${esc(entry.end)}</td><td data-label="金额">${money(entry.cents)}</td></tr>`
-    ).join('') || '<tr><td colspan="3" class="empty">没有符合筛选条件的明细。</td></tr>';
+      `<tr>${showSheet ? `<td data-label="子表">${esc(entry.sheet)}</td>` : ''}<td data-label="车牌">${esc(entry.plate)}</td><td data-label="起点 → 终点">${esc(entry.start)} → ${esc(entry.end)}</td><td data-label="金额">${money(entry.cents)}</td></tr>`
+    ).join('') || `<tr><td colspan="${showSheet ? 4 : 3}" class="empty">没有符合筛选条件的明细。</td></tr>`;
   }
 
   function renderChoices() {
     const all = selected.size === plates.length;
-    const query = search.value.trim().toLowerCase();
-    const matches = plates.filter(plate => plate.toLowerCase().includes(query));
+    const matchesText = createTextMatcher(search.value);
+    const matches = plates.filter(plate => matchesText(plate));
     choices.innerHTML = `<button type="button" class="project-all ${all ? 'selected' : ''}" aria-pressed="${all}">全部车辆（${selected.size}）</button>`
       + matches.map(plate => `<label class="project-chip"><input type="checkbox" value="${esc(plate)}" ${selected.has(plate) ? 'checked' : ''}><span>${esc(plate)}</span></label>`).join('')
       + (matches.length ? '' : '<p class="help">没有匹配车辆</p>');
@@ -68,6 +70,116 @@ function installPlateFilter(root, entries, esc, money) {
   renderRows();
 }
 
+function filterByText(items, query) {
+  const matchesText = createTextMatcher(query);
+  let matches = 0;
+  for (const item of items) {
+    item.hidden = !matchesText(item.textContent);
+    if (!item.hidden) matches++;
+  }
+  return matches;
+}
+
+function installImportProblems(dialog, trigger, esc) {
+  const panel = dialog.querySelector('#importProblems');
+  const header = panel.querySelector('.import-problems-head');
+  const closeButton = panel.querySelector('[data-close-problems]');
+  const search = panel.querySelector('input');
+  const list = panel.querySelector('ul');
+  const count = panel.querySelector('[data-problem-count]');
+  const empty = panel.querySelector('[data-no-problems]');
+  const body = dialog.querySelector('.modal-body');
+  const footer = dialog.querySelector('.modal-footer');
+  const gap = 12;
+  let drag = null;
+  let moved = false;
+
+  function move(left, top) {
+    panel.style.left = Math.max(gap, Math.min(left, innerWidth - panel.offsetWidth - gap)) + 'px';
+    panel.style.top = Math.max(gap, Math.min(top, innerHeight - panel.offsetHeight - gap)) + 'px';
+  }
+
+  function keepInView() {
+    move(panel.offsetLeft, panel.offsetTop);
+  }
+
+  function place() {
+    if (moved) {
+      keepInView();
+      return;
+    }
+    const rect = dialog.getBoundingClientRect();
+    const right = rect.right + gap;
+    const left = rect.left - panel.offsetWidth - gap;
+    const fitsRight = right + panel.offsetWidth + gap <= innerWidth;
+    const overlaps = !fitsRight && left < gap;
+    const top = overlaps ? body.getBoundingClientRect().top : rect.top;
+    panel.style.removeProperty('--import-problems-max-height');
+    if (overlaps) {
+      const available = footer.getBoundingClientRect().top - top - gap;
+      panel.style.setProperty('--import-problems-max-height', Math.max(0, available) + 'px');
+    }
+    move(fitsRight ? right : overlaps ? rect.right - panel.offsetWidth - gap : left, top);
+  }
+
+  function close(restoreFocus = false) {
+    window.removeEventListener('resize', place);
+    if (!panel.matches(':popover-open')) return false;
+    if (drag && header.hasPointerCapture(drag.id)) header.releasePointerCapture(drag.id);
+    drag = null;
+    panel.hidePopover();
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) trigger.focus({ preventScroll: true });
+    return true;
+  }
+
+  function filter() {
+    const matches = filterByText(list.children, search.value);
+    const total = list.childElementCount;
+    count.textContent = search.value.trim() ? `匹配 ${matches} / ${total} 条` : `共 ${total} 条`;
+    empty.hidden = matches > 0;
+    list.scrollTop = 0;
+    if (panel.matches(':popover-open')) keepInView();
+  }
+
+  trigger.onclick = () => {
+    if (panel.matches(':popover-open')) return;
+    moved = false;
+    panel.showPopover();
+    place();
+    window.addEventListener('resize', place);
+    trigger.setAttribute('aria-expanded', 'true');
+    search.focus({ preventScroll: true });
+  };
+  closeButton.onclick = () => close(true);
+  search.oninput = filter;
+  dialog.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && close(true)) event.preventDefault();
+  });
+
+  header.onpointerdown = event => {
+    if (event.button !== 0 || drag || event.target.closest('button')) return;
+    drag = { id: event.pointerId, x: event.clientX - panel.offsetLeft, y: event.clientY - panel.offsetTop };
+    header.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+  header.onpointermove = event => {
+    if (drag?.id !== event.pointerId) return;
+    moved = true;
+    move(event.clientX - drag.x, event.clientY - drag.y);
+  };
+  header.onlostpointercapture = () => { drag = null; };
+
+  return {
+    close,
+    setErrors(errors) {
+      search.value = '';
+      list.innerHTML = errors.map(error => `<li>${esc(error)}</li>`).join('');
+      filter();
+    },
+  };
+}
+
 export async function openExcelImport({ service, esc, money, notify, load, bindCalendarInput, categories }) {
   let file;
   try {
@@ -77,6 +189,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
     return;
   }
   if (file.cancelled) return;
+  const { kind, default_category: defaultCategory } = file;
 
   const dialog = document.createElement('dialog');
   dialog.className = 'excel-import';
@@ -85,66 +198,107 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
     <div class="modal-head"><h2 id="excel-import-title">批量导入</h2></div>
     <div class="modal-body">
       <form class="import-fields">
-        <label>子表<select name="sheet" required><option value="">请选择子表</option>
-          ${file.sheets.map(sheet => `<option>${esc(sheet)}</option>`).join('')}
-        </select></label>
+        <fieldset class="import-sheets">
+          <legend>子表</legend>
+          <div class="import-sheet-tools">
+            <input type="search" aria-label="搜索子表" placeholder="搜索子表" data-sheet-search>
+            <button type="button" class="secondary" data-select-sheets>全选</button>
+            <button type="button" class="secondary" data-clear-sheets>全不选</button>
+          </div>
+          <div class="import-sheet-choices">
+            ${file.sheets.map(sheet => `<label class="project-chip"><input type="checkbox" name="sheets" value="${esc(sheet)}" checked><span>${esc(sheet)}</span></label>`).join('')}
+          </div>
+          <p class="help" data-no-sheets hidden>没有匹配的子表</p>
+        </fieldset>
         <label>记账日期<input id="excelImportDate" name="date" required></label>
         <label>往来方<input name="party" placeholder="如：华通" required></label>
         <div class="import-accounting">
-          <div>
-            <label id="import-kind-label">收支方向</label>
-            <input type="hidden" name="kind" value="收入">
-            <div class="segmented" role="group" aria-labelledby="import-kind-label">
-              <button type="button" data-import-kind="支出" aria-pressed="false">支出</button>
-              <button type="button" data-import-kind="收入" aria-pressed="true" class="selected">收入</button>
+          <fieldset class="import-direction">
+            <legend>收支方向</legend>
+            <div class="segmented">
+              ${['支出', '收入'].map(direction => {
+                const selected = direction === kind;
+                return `<button type="button" disabled class="${selected ? 'selected' : ''}" aria-pressed="${selected}">${direction}</button>`;
+              }).join('')}
             </div>
-          </div>
+          </fieldset>
           <label>收支项目<select name="category" required></select></label>
         </div>
       </form>
       <div data-preview></div>
-      <p role="alert"></p>
     </div>
     <div class="modal-footer row">
+      <div class="import-feedback">
+        <p role="alert"></p>
+        <button type="button" class="text-button" data-show-errors aria-haspopup="dialog" aria-controls="importProblems" aria-expanded="false" hidden>查看问题</button>
+      </div>
       <button type="button" class="secondary" data-close>取消</button>
       <button type="button" class="secondary" data-check>预览</button>
       <button type="button" data-import disabled>确认导入</button>
+    </div>
+    <div id="importProblems" class="import-problems" popover="manual" role="dialog" aria-labelledby="importProblemsTitle">
+      <div class="import-problems-head">
+        <h3 id="importProblemsTitle">导入问题</h3>
+        <span class="muted" data-problem-count aria-live="polite"></span>
+        <button type="button" class="text-button" aria-label="关闭导入问题" data-close-problems>×</button>
+      </div>
+      <div class="import-problems-search">
+        <input type="search" aria-label="搜索导入问题" placeholder="搜索子表、行号或原因">
+      </div>
+      <ul class="import-problems-list" aria-label="导入问题列表" tabindex="0"></ul>
+      <p class="help import-problems-empty" data-no-problems hidden>没有匹配的问题</p>
     </div>`;
   const form = dialog.querySelector('form');
   const previewNode = dialog.querySelector('[data-preview]');
   const errorNode = dialog.querySelector('[role=alert]');
+  const showErrors = dialog.querySelector('[data-show-errors]');
+  const problems = installImportProblems(dialog, showErrors, esc);
+  const sheetSearch = form.querySelector('[data-sheet-search]');
+  const sheetFields = [...form.querySelectorAll('[name=sheets]')];
+  const sheetLabels = sheetFields.map(field => field.closest('label'));
+  const noSheets = form.querySelector('[data-no-sheets]');
   const check = dialog.querySelector('[data-check]');
   const submit = dialog.querySelector('[data-import]');
   const close = dialog.querySelector('[data-close]');
+  const projects = categories.filter(category => category.active && category.kind === kind);
+  const select = form.elements.category;
+  const placeholder = projects.length ? '请选择收支项目' : '请先到收支类型添加项目';
+  select.replaceChildren(new Option(placeholder, ''), ...projects.map(category => new Option(category.name, category.name)));
+  select.value = projects.some(category => category.name === defaultCategory) ? defaultCategory : '';
   let busy = false;
   let preview = null;
 
   function invalidate() {
+    problems.close();
+    problems.setErrors([]);
     preview = null;
     submit.disabled = true;
     previewNode.replaceChildren();
     errorNode.textContent = '';
+    showErrors.hidden = true;
   }
 
-  function setKind(kind) {
-    form.elements.kind.value = kind;
-    for (const button of form.querySelectorAll('[data-import-kind]')) {
-      const selected = button.dataset.importKind === kind;
-      button.classList.toggle('selected', selected);
-      button.setAttribute('aria-pressed', String(selected));
-    }
-    const projects = categories.filter(category => category.active && category.kind === kind);
-    const preferred = kind === '收入' && projects.some(category => category.name === '运费') ? '运费' : '';
-    const select = form.elements.category;
-    const placeholder = projects.length ? '请选择收支项目' : '请先到收支类型添加项目';
-    select.replaceChildren(new Option(placeholder, ''), ...projects.map(category => new Option(category.name, category.name)));
-    select.value = preferred;
+  function selectSheets(checked) {
+    if (!sheetFields.some(field => field.checked !== checked)) return;
+    for (const field of sheetFields) field.checked = checked;
     invalidate();
   }
 
   async function run(commit) {
-    if (busy || !form.reportValidity() || (commit && !preview)) return;
-    const options = Object.fromEntries(new FormData(form));
+    if (busy || (commit && !preview)) return;
+    const expected = commit ? preview : null;
+    invalidate();
+    if (!form.reportValidity()) return;
+    const fields = new FormData(form);
+    const options = {
+      sheets: fields.getAll('sheets'), date: fields.get('date'), party: fields.get('party'),
+      kind, category: fields.get('category'),
+    };
+    if (!options.sheets.length) {
+      errorNode.textContent = '请至少选择一张子表';
+      sheetSearch.focus();
+      return;
+    }
     if (!options.date) {
       errorNode.textContent = '请选择记账日期';
       form.elements.date.focus();
@@ -154,11 +308,10 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
       errorNode.textContent = '请填写往来方';
       return;
     }
-    const expected = commit ? preview : null;
-    invalidate();
     busy = true;
     close.disabled = check.disabled = true;
-    for (const field of form.elements) field.disabled = true;
+    const enabledFields = [...form.elements].filter(field => !field.disabled);
+    for (const field of enabledFields) field.disabled = true;
     try {
       const result = await service.call('import_excel', { path: file.path, options, expected });
       if (commit) {
@@ -173,14 +326,16 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
       }
       preview = result;
       const { entries, errors, new_plates, new_addresses } = result;
+      const showSheet = result.sheets.length > 1;
       previewNode.innerHTML = `
-        <p>${esc(result.sheet)} · ${esc(result.date)} · ${esc(result.party)} · ${esc(result.kind)} / ${esc(result.category)}</p>
+        <p>${esc(result.date)} · ${esc(result.party)} · ${esc(result.kind)} / ${esc(result.category)}</p>
         <p>明细 ${result.details} 条 · 明细金额合计 ¥${money(result.source_total)}</p>
         <p>当前可入账 ${entries.length} 笔 · ¥${money(result.total)}
           ${result.duplicates ? ` · 重复跳过 ${result.duplicates} 条（¥${money(result.duplicate_total)}）` : ''}</p>
+        <ul class="import-summaries">${result.sheets.map(sheet => `<li><strong>${esc(sheet.sheet)}</strong>
+          · 明细 ${sheet.details} 条（¥${money(sheet.source_total)}） · 跳过 ${sheet.duplicates} 条 · 可入账 ${sheet.count} 笔（¥${money(sheet.total)}）</li>`).join('')}</ul>
         ${new_addresses.length ? `<p>确认后新增 ${new_addresses.length} 个自定义地址：${new_addresses.map(esc).join('、')}</p>` : ''}
         ${new_plates.length ? `<p>确认后新增 ${new_plates.length} 辆车：${new_plates.map(esc).join('、')}</p>` : ''}
-        ${errors.length ? `<ul class="import-errors">${errors.map(error => `<li>${esc(error)}</li>`).join('')}</ul>` : ''}
         ${entries.length ? `
           <button type="button" class="project-header-button mobile-project-filter" aria-haspopup="dialog" aria-expanded="false" aria-controls="importPlateFilter">车牌 ▾</button>
           <div id="importPlateFilter" class="route-filter-popover" popover role="dialog" aria-label="车牌筛选">
@@ -189,27 +344,33 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
             <div class="route-filter-choices"></div>
           </div>
           <div class="scroll"><table><thead><tr>
+            ${showSheet ? '<th>子表</th>' : ''}
             <th><button type="button" class="project-header-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="importPlateFilter">车牌 ▾</button></th>
             <th>起点 → 终点</th><th>金额</th>
           </tr></thead><tbody></tbody></table></div>` : ''}`;
-      if (entries.length) installPlateFilter(previewNode, entries, esc, money);
+      if (entries.length) installPlateFilter(previewNode, entries, showSheet, esc, money);
       submit.disabled = !entries.length || !!errors.length;
+      if (errors.length) {
+        problems.setErrors(errors);
+        errorNode.textContent = `有 ${errors.length} 个导入问题，核对后请重新预览。`;
+        showErrors.hidden = false;
+      } else if (!entries.length) {
+        errorNode.textContent = result.duplicates ? '所选明细均已入账。' : '所选子表没有可入账明细。';
+      }
     } catch (error) {
       errorNode.textContent = String(error);
     } finally {
       busy = false;
       close.disabled = check.disabled = false;
-      for (const field of form.elements) field.disabled = false;
+      for (const field of enabledFields) field.disabled = false;
     }
   }
 
-  form.oninput = invalidate;
-  for (const button of form.querySelectorAll('[data-import-kind]')) {
-    button.onclick = () => {
-      if (button.dataset.importKind !== form.elements.kind.value) setKind(button.dataset.importKind);
-    };
-  }
-  setKind('收入');
+  sheetSearch.oninput = () => { noSheets.hidden = filterByText(sheetLabels, sheetSearch.value) > 0; };
+  sheetSearch.onkeydown = event => { if (event.key === 'Enter') event.preventDefault(); };
+  form.querySelector('[data-select-sheets]').onclick = () => selectSheets(true);
+  form.querySelector('[data-clear-sheets]').onclick = () => selectSheets(false);
+  form.oninput = event => { if (event.target !== sheetSearch) invalidate(); };
   form.onsubmit = event => {
     event.preventDefault();
     void run(false);
@@ -217,8 +378,9 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
   check.onclick = () => run(false);
   submit.onclick = () => run(true);
   close.onclick = () => dialog.close();
-  dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+  dialog.addEventListener('cancel', event => { if (problems.close(true) || busy) event.preventDefault(); });
   dialog.addEventListener('close', () => {
+    problems.close();
     const calendar = dialog.querySelector('#ledgerCalendar');
     if (calendar) {
       calendar.hidePopover();

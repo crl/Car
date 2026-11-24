@@ -151,7 +151,31 @@ main section:has(>table)>#subtotal,main section:has(>.scroll>table)>#subtotal{ma
 .excel-import[open]{display:flex;flex-direction:column;width:min(850px,calc(100vw - 32px));max-height:calc(100dvh - 32px)}
 .excel-import .modal-body{overflow:auto}
 .excel-import .import-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
-.excel-import .import-errors{max-height:160px;overflow:auto}
+.excel-import .import-sheets{grid-column:1/-1;min-width:0;margin:0;padding:0;border:0}
+.excel-import .import-sheets legend{margin-bottom:7px;padding:0;font-size:13px;font-weight:550}
+.excel-import .import-sheet-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
+.excel-import .import-sheet-tools input{flex:1 1 150px;width:auto;max-width:220px;min-width:0;min-height:34px;padding:6px 10px}
+.excel-import .import-sheet-tools button{min-height:34px;padding:6px 12px;font-size:13px}
+.excel-import .import-sheet-choices{display:flex;flex-wrap:wrap;gap:8px;max-height:160px;overflow:auto;padding:3px}
+.excel-import .import-sheet-choices span{overflow-wrap:anywhere}
+.excel-import .import-summaries{margin:0 0 12px;padding-left:20px}
+.import-problems{position:fixed;inset:auto;margin:0;width:min(420px,calc(100vw - 24px));max-height:min(440px,calc(100dvh - 24px),var(--import-problems-max-height,440px));overflow:hidden;padding:0;color:var(--ink);background:white;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 40px #1e355529}
+.import-problems:popover-open{display:flex;flex-direction:column}
+.import-problems::backdrop{background:transparent;pointer-events:none}
+.import-problems-head{display:flex;flex-shrink:0;align-items:center;gap:10px;padding:9px 14px;background:var(--surface);cursor:grab;touch-action:none;user-select:none}
+.import-problems-head:active{cursor:grabbing}
+.import-problems-head h3{margin:0;font-size:15px}
+.import-problems-head button{margin-left:auto;min-width:34px;min-height:34px;padding:0;font-size:21px}
+.import-problems-search{flex-shrink:0;padding:10px 14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.import-problems-search input{min-height:34px;padding:5px 10px}
+.import-problems-list{min-height:0;margin:0;padding:0;overflow:auto;overscroll-behavior:contain;list-style:none}
+.import-problems-list li{padding:9px 14px;overflow-wrap:anywhere}
+.import-problems-list li:not([hidden])~li:not([hidden]){border-top:1px solid var(--line)}
+.import-problems-empty{margin:0;padding:10px 14px}
+.excel-import .import-feedback{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;flex:1 0 100%;min-width:0}
+.excel-import .import-feedback:has(p:empty){display:none}
+.excel-import .import-feedback p{margin:0;color:#bc4141;overflow-wrap:anywhere}
+.excel-import .import-feedback button{flex:none;padding:4px 8px}
 
 .custom-address-repeat{display:none}
 @media(min-width:1050px){
@@ -169,6 +193,9 @@ main section:has(>table)>#subtotal,main section:has(>.scroll>table)>#subtotal{ma
  .custom-address-table tbody .empty{justify-content:center}
 }
 .excel-import .import-accounting{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.import-direction legend{margin:0;padding:0;color:inherit;font-size:13px;font-weight:550}
+.import-direction button:disabled{opacity:1;cursor:default;box-shadow:none}
+.import-direction button.selected:disabled{color:#7b67aa;box-shadow:0 1px 5px #1f345018}
 .account-footer{margin-top:12px;padding-top:12px;border-top:1px solid #ded1f1}
 .account-trigger{display:flex;justify-content:flex-start;align-items:center;gap:10px;width:100%;padding:6px 0;text-align:left;background:transparent;color:#45375a;border:0}
 .account-trigger:hover{color:var(--blue)}

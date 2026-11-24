@@ -176,14 +176,12 @@ async fn save_record(
 }
 #[tauri::command]
 async fn pick_excel_import(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<Value, String> {
-    use calamine::Reader;
-    task(state.inner().clone(), move |_| {
+    task(state.inner().clone(), move |s| {
         let Some(file) = app.dialog().file().add_filter("Excel 工作簿", &["xlsx"]).blocking_pick_file() else {
             return Ok(json!({"cancelled":true}));
         };
         let path = picked_path(file)?;
-        let sheets = ledger::excel_import::workbook(&path)?.sheet_names();
-        Ok(json!({"path":path,"sheets":sheets}))
+        ledger::Ledger::open(&s.path)?.excel_import_info(&path)
     }).await
 }
 
