@@ -239,7 +239,16 @@ function renderVehicleDetail(){
  if(!car){document.querySelector('main').innerHTML='<section class="empty"><h2>车辆不存在</h2><p>这台车辆不存在，请返回车辆列表选择。</p><a href="#/cars">返回车辆列表</a></section>';return}
  let all=ledgerScope(),income=sum(all,'收入'),expense=sum(all,'支出');
  const from=$('start')?.value||'',to=$('end')?.value||'';
- document.querySelector('main').innerHTML='<p id="message" role="status"></p><section class="vehicle-profile"><div class="profile-grid"><div><small>车牌</small><strong>'+esc(car.plate||'未填写')+'</strong></div><div><small>司机</small><strong>'+esc(carDrivers(car).map(driver=>driver.name).join('、'))+'</strong></div><div><small>备注</small><strong>'+esc(car.note||'无备注')+'</strong></div></div></section><div class="stats detail-stats">'+[['累计收入',income],['累计支出',expense],['收支差额',income-expense]].map(([label,value])=>'<div class="stat"><span class="muted">'+label+'</span><strong>¥ '+money(value)+'</strong></div>').join('')+'</div><section><div class="toolbar"><h2>单车收支明细</h2><span class="section-note">仅显示当前车辆</span><input id="start" type="date" aria-label="开始日期" onchange="renderVehicleEntries()"><span>至</span><input id="end" type="date" aria-label="结束日期" onchange="renderVehicleEntries()"><button class="text-button" onclick="clearFilters()">清空筛选</button></div><p id="subtotal"></p><div class="scroll"><table class="vehicle-entries"><thead><tr>'+['日期','收支','项目','金额','起点 → 终点','往来方','操作'].map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody id="vehicleEntries"></tbody></table></div><p class="help">收支差额为已录入收入减支出，不代表会计利润。</p></section>';
+ const profile=`<section class="vehicle-profile">
+  <div class="profile-grid">
+   <div><small>车牌</small><strong>${esc(car.plate||'未填写')}</strong></div>
+   <div><small>司机</small><strong>${esc(carDrivers(car).map(driver=>driver.name).join('、'))}</strong></div>
+   <div><small>备注</small><strong>${esc(car.note||'无备注')}</strong></div>
+  </div>
+  ${isAdmin?'<button id="editVehicleProfile" class="secondary" type="button">编辑</button>':''}
+ </section>`;
+ document.querySelector('main').innerHTML='<p id="message" role="status"></p>'+profile+'<div class="stats detail-stats">'+[['累计收入',income],['累计支出',expense],['收支差额',income-expense]].map(([label,value])=>'<div class="stat"><span class="muted">'+label+'</span><strong>¥ '+money(value)+'</strong></div>').join('')+'</div><section><div class="toolbar"><h2>单车收支明细</h2><span class="section-note">仅显示当前车辆</span><input id="start" type="date" aria-label="开始日期" onchange="renderVehicleEntries()"><span>至</span><input id="end" type="date" aria-label="结束日期" onchange="renderVehicleEntries()"><button class="text-button" onclick="clearFilters()">清空筛选</button></div><p id="subtotal"></p><div class="scroll"><table class="vehicle-entries"><thead><tr>'+['日期','收支','项目','金额','起点 → 终点','往来方','操作'].map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody id="vehicleEntries"></tbody></table></div><p class="help">收支差额为已录入收入减支出，不代表会计利润。</p></section>';
+ $('editVehicleProfile')?.addEventListener('click',()=>carForm(car.id));
  $('start').value=from;$('end').value=to;installLedgerCalendar();installProjectHeaderFilter();installKindHeaderFilter();installRouteHeaderFilters();renderProjectFilters();renderVehicleEntries();
 }
 let currentVehicleRows=[];

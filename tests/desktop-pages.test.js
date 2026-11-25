@@ -297,6 +297,44 @@ test('vehicles assign drivers and driver forms only edit profile fields',async()
  }finally{h.close()}
 });
 
+test('the vehicle detail edit button opens and saves the current vehicle',async()=>{
+ const h=await page('/cars/2'),w=h.w,d=w.document,state=fixture();
+ try{
+  const button=d.querySelector('.vehicle-profile button');
+  assert.ok(button,'the vehicle profile has an edit button');
+  assert.equal(button.textContent,'编辑');
+  button.click();
+
+  const modal=d.querySelector('#modal'),form=d.querySelector('#form');
+  assert.equal(modal.open,true);
+  assert.equal(d.querySelector('#title').textContent,'编辑车辆');
+  assert.equal(form.elements.plate.value,'测试002');
+  assert.equal(form.elements.note.value,'');
+  assert.deepEqual([...form.querySelectorAll('[name=driver_ids]:checked')].map(box=>box.value),['1']);
+
+  w.service.request=async(path,options)=>{
+   if(path==='/api/cars'){
+    const record=JSON.parse(options.body);
+    Object.assign(state.cars.find(car=>car.id===record.id),record);
+   }
+   return {ok:true,json:async()=>structuredClone(state)};
+  };
+  form.elements.plate.value='测试009';
+  form.elements.note.value='新备注';
+  await form.onsubmit({preventDefault(){}});
+  assert.equal(modal.open,false);
+  assert.equal(d.querySelector('#pageTitle').textContent,'测试009');
+  assert.match(d.querySelector('.vehicle-profile').textContent,/新备注/);
+ }finally{h.close()}
+});
+
+test('the vehicle detail edit button is unavailable to guests',async()=>{
+ const h=await page('/cars/2',{admin:false});
+ try{
+  assert.equal(h.w.document.querySelector('.vehicle-profile button'),null);
+ }finally{h.close()}
+});
+
 
 test('driver actions are displayed after vehicles in the final column',async()=>{
  const h=await page('/drivers'),d=h.w.document;
