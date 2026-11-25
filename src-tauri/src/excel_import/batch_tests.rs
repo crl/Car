@@ -236,6 +236,216 @@ fn a_save_error_rolls_back_all_selected_sheets_and_related_records() {
 }
 
 #[test]
+fn pickup_filename_marker_can_appear_anywhere_in_the_file_name() {
+    let folder = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(folder.path().join("ledger.db")).unwrap();
+    let mut workbook = Workbook::new();
+    pickup_sheet(&mut workbook, "国产", false);
+
+    for name in ["本月_提车费..xlsx", "本月_提车费_补录.xlsx", "_提车费.xlsx"] {
+        let path = folder.path().join(name);
+        workbook.save(&path).unwrap();
+        let info = ledger.excel_import_info(&path).unwrap();
+        assert_eq!(info["kind"], "支出", "{name}");
+        assert_eq!(info["default_category"], "提车费", "{name}");
+        let preview = ledger
+            .import_excel(&path, options(&["国产"], "支出", "提车费"), None)
+            .unwrap();
+        assert_eq!(preview["errors"], json!([]), "{name}");
+        assert_eq!(preview["total"], 10000, "{name}");
+    }
+}
+
+#[test]
+fn unregistered_and_ambiguous_names_are_rejected_before_opening_excel() {
+    let folder = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(folder.path().join("ledger.db")).unwrap();
+    for name in ["本月_提车费_运费.xlsx", "本月_油费.xlsx"] {
+        let path = folder.path().join(name);
+        let picker_error = ledger.excel_import_info(&path).unwrap_err();
+        let preview_error = ledger
+            .import_excel(&path, options(&["明细"], "收入", "运费"), None)
+            .unwrap_err();
+        assert_eq!(preview_error, picker_error);
+        if name.contains("油费") {
+            assert!(
+                picker_error.contains("暂不支持") && picker_error.contains("油费"),
+                "{picker_error}"
+            );
+        } else {
+            assert!(
+                picker_error.contains("提车费")
+                    && picker_error.contains("运费")
+                    && picker_error.contains("修改文件名"),
+                "{picker_error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_registered_handler_can_inspect_preview_and_commit_its_own_format() {
+    const HEADERS: &[&str] = &["燃油金额", "车号"];
+
+    struct FuelImporter;
+    struct FuelRun;
+
+    impl ExcelImporter for FuelImporter {
+        fn kind(&self) -> &'static str {
+            "支出"
+        }
+
+        fn headers(&self) -> &'static [&'static str] {
+            HEADERS
+        }
+
+        fn start(&self, _file_stem: &str) -> Box<dyn ImportRun> {
+            Box::new(FuelRun)
+        }
+    }
+
+    impl ImportRun for FuelRun {
+        fn read_sheet(
+            &mut self,
+            _tx: &Transaction<'_>,
+            workbook: &mut super::Workbook,
+            sheet: &str,
+            _errors: &mut Vec<String>,
+        ) -> Result<PreparedSheet> {
+            let (range, columns) = read_table(workbook, sheet, HEADERS)?;
+            let first_row = range.start().unwrap().0 as usize;
+            let rows = range
+                .rows()
+                .enumerate()
+                .skip(1)
+                .map(|(index, row)| {
+                    Ok(Detail {
+                        row: first_row + index + 1,
+                        excluded: false,
+                        start: String::new(),
+                        end: String::new(),
+                        plate: field(row, columns[1]).to_uppercase(),
+                        cents: amount(row.get(columns[0]))?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(PreparedSheet::new(fingerprint(&rows)?, rows.len(), rows))
+        }
+
+        fn record_sources(
+            &self,
+            tx: &Transaction<'_>,
+            sheet: &SheetImport,
+            group: &Group,
+            entry_id: i64,
+        ) -> Result<()> {
+            tx.execute(
+                "INSERT INTO test_fuel_sources VALUES(?,?,?)",
+                params![entry_id, sheet.name, group.source_rows[0] as i64],
+            )
+            .map_err(err)?;
+            Ok(())
+        }
+    }
+
+    let folder = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(folder.path().join("ledger.db")).unwrap();
+    ledger.conn.execute_batch(
+        "CREATE TABLE test_fuel_sources(entry_id INTEGER REFERENCES entries(id), sheet TEXT, row_number INTEGER);",
+    ).unwrap();
+    let mut registry = ImportRegistry::default();
+    registry.register("油费", FuelImporter).unwrap();
+    assert!(registry.register("油费", FuelImporter).is_err());
+
+    let path = folder.path().join("本月_油费.xlsx");
+    let mut workbook = Workbook::new();
+    workbook
+        .add_worksheet()
+        .set_name("燃油明细")
+        .unwrap()
+        .write_row(0, 0, HEADERS.iter().copied())
+        .unwrap()
+        .write_row(1, 0, ["19.50", "沪A12345"])
+        .unwrap();
+    freight_sheet(&mut workbook, "不同表头", &[("VIN01", "60")]);
+    workbook.save(&path).unwrap();
+
+    let info = registry.inspect(&ledger, &path).unwrap();
+    assert_eq!(info["sheets"], json!(["燃油明细"]));
+    assert_eq!(info["kind"], "支出");
+    assert_eq!(info["default_category"], "油费");
+    let selection = || options(&["燃油明细"], "支出", "油费");
+    let preview = registry.import(&ledger, &path, selection(), None).unwrap();
+    assert_eq!(preview["total"], 1950);
+    assert_eq!(preview["new_addresses"], json!([]));
+    let result = registry
+        .import(&ledger, &path, selection(), Some(preview))
+        .unwrap();
+    assert_eq!(result["count"], 1);
+    let source = ledger
+        .conn
+        .query_row(
+            "SELECT e.category, e.cents, s.sheet, s.row_number
+         FROM entries e JOIN test_fuel_sources s ON e.id=s.entry_id",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(source, ("油费".into(), 1950, "燃油明细".into(), 2));
+    assert_eq!(
+        ledger.data().unwrap()["entries"][0]["start_address_id"],
+        Value::Null
+    );
+}
+
+#[test]
+fn existing_freight_and_pickup_source_records_still_prevent_duplicate_entries() {
+    let folder = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(folder.path().join("ledger.db")).unwrap();
+    // These are source records as persisted by v0.1.8, independently of the import handlers.
+    ledger
+        .conn
+        .execute_batch(
+            "INSERT INTO cars(id,name,plate) VALUES(1,'','沪A12345');
+         INSERT INTO entries(id,car_id,date,kind,category,cents) VALUES
+            (1,1,'2026-11-24','收入','运费',5000), (2,1,'2026-11-24','支出','提车费',10000);",
+        )
+        .unwrap();
+    ledger.conn.execute(
+        "INSERT INTO excel_import_sources(vin,order_number,fingerprint,entry_id) VALUES('VIN01','单号01',?,1)",
+        [r#"["沪A12345","上海","昆山",5000]"#],
+    ).unwrap();
+    ledger.conn.execute(
+        "INSERT INTO excel_pickup_sources(file_stem,sheet,fingerprint,entry_id) VALUES('本月_提车费','明细',?,2)",
+        ["1a0f2acd5e77767f94bd5621a109f0500c61ad81c9f35b5a2ddf2180c8df151e"],
+    ).unwrap();
+
+    let mut freight = Workbook::new();
+    freight_sheet(&mut freight, "明细", &[("VIN01", "50")]);
+    let mut pickup = Workbook::new();
+    pickup_sheet(&mut pickup, "明细", false);
+    for (mut workbook, kind, name, duplicates) in
+        [(freight, "收入", "运费", 1), (pickup, "支出", "提车费", 2)]
+    {
+        let path = folder.path().join(format!("本月_{name}.xlsx"));
+        workbook.save(&path).unwrap();
+        let preview = ledger
+            .import_excel(&path, options(&["明细"], kind, name), None)
+            .unwrap();
+        assert_eq!(preview["errors"], json!([]), "{name}");
+        assert_eq!(preview["duplicates"], duplicates, "{name}");
+        assert_eq!(preview["entries"], json!([]), "{name}");
+    }
+}
+
+#[test]
 fn pickup_batches_count_identical_details_skip_totals_and_track_imported_sheets() {
     let folder = tempfile::tempdir().unwrap();
     let ledger = Ledger::open(folder.path().join("ledger.db")).unwrap();

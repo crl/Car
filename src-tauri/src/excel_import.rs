@@ -1,5 +1,5 @@
 use super::{cents, err, Ledger, Result};
-use calamine::{open_workbook, Data, Reader, Xlsx};
+use calamine::{open_workbook, Data, Range, Reader, Xlsx};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -9,48 +9,73 @@ use std::{
     fs::File,
     io::BufReader,
     path::Path,
+    sync::OnceLock,
 };
 
 #[cfg(test)]
 #[path = "excel_import/batch_tests.rs"]
 mod batch_tests;
 
+#[path = "excel_import/freight.rs"]
+mod freight;
+#[path = "excel_import/pickup.rs"]
+mod pickup;
+
 type Workbook = Xlsx<BufReader<File>>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Freight,
-    Pickup,
+trait ExcelImporter: Sync + Send {
+    fn kind(&self) -> &'static str;
+    fn headers(&self) -> &'static [&'static str];
+
+    fn matches_filename(&self, stem: &str, category: &str) -> bool {
+        stem.strip_suffix(category)
+            .and_then(|prefix| prefix.strip_suffix('_'))
+            .is_some_and(|prefix| !prefix.trim().is_empty())
+    }
+
+    fn start(&self, file_stem: &str) -> Box<dyn ImportRun>;
 }
 
-impl Format {
-    fn headers(self) -> &'static [&'static str] {
-        match self {
-            Self::Freight => &[
-                "始发地",
-                "目的地",
-                "对账金额",
-                "卡车号",
-                "VIN",
-                "上游指令单号",
-            ],
-            Self::Pickup => &["始发地", "目的地", "提车费", "卡车号"],
-        }
-    }
+trait ImportRun {
+    fn read_sheet(
+        &mut self,
+        tx: &Transaction<'_>,
+        workbook: &mut Workbook,
+        sheet: &str,
+        errors: &mut Vec<String>,
+    ) -> Result<PreparedSheet>;
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Freight => "运费",
-            Self::Pickup => "提车费",
-        }
-    }
+    fn record_sources(
+        &self,
+        tx: &Transaction<'_>,
+        sheet: &SheetImport,
+        group: &Group,
+        entry_id: i64,
+    ) -> Result<()>;
+}
 
-    fn kind(self) -> &'static str {
-        match self {
-            Self::Freight => "收入",
-            Self::Pickup => "支出",
-        }
-    }
+#[derive(Default)]
+struct ImportRegistry {
+    handlers: BTreeMap<&'static str, Box<dyn ExcelImporter>>,
+}
+
+struct RegisteredImporter<'a> {
+    name: &'static str,
+    handler: &'a dyn ExcelImporter,
+}
+
+fn builtin_importers() -> &'static ImportRegistry {
+    static REGISTRY: OnceLock<ImportRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = ImportRegistry::default();
+        registry
+            .register("运费", freight::FreightImporter)
+            .expect("unique freight importer");
+        registry
+            .register("提车费", pickup::PickupImporter)
+            .expect("unique pickup importer");
+        registry
+    })
 }
 
 #[derive(Deserialize)]
@@ -69,12 +94,43 @@ pub struct ImportOptions {
 struct Detail {
     #[serde(skip)]
     row: usize,
-    vin: String,
-    order: String,
+    #[serde(skip)]
+    excluded: bool,
     start: String,
     end: String,
     plate: String,
     cents: i64,
+}
+
+// These field names and their order are part of the existing workbook fingerprints.
+#[derive(Serialize)]
+struct LegacyDetail {
+    vin: String,
+    order: String,
+    #[serde(flatten)]
+    detail: Detail,
+}
+
+struct PreparedSheet {
+    fingerprint: String,
+    details: usize,
+    source_total: i64,
+    duplicates: usize,
+    duplicate_total: i64,
+    rows: Vec<Detail>,
+}
+
+impl PreparedSheet {
+    fn new(fingerprint: String, details: usize, rows: Vec<Detail>) -> Self {
+        Self {
+            fingerprint,
+            details,
+            source_total: rows.iter().map(|row| row.cents).sum(),
+            duplicates: 0,
+            duplicate_total: 0,
+            rows,
+        }
+    }
 }
 
 struct Group {
@@ -84,8 +140,7 @@ struct Group {
     start: String,
     end: String,
     cents: i64,
-    details: usize,
-    freight_sources: Vec<(String, String, String)>,
+    source_rows: Vec<usize>,
 }
 
 struct SheetImport {
@@ -110,16 +165,9 @@ impl SheetImport {
     }
 }
 
-struct FreightRow {
-    fingerprint: String,
-    sheet: String,
-    row: usize,
-}
-
 #[derive(Default)]
 struct Batch {
     addresses: BTreeMap<String, Option<i64>>,
-    freight_seen: HashMap<(String, String), FreightRow>,
     errors: Vec<String>,
 }
 
@@ -127,10 +175,9 @@ fn cell(value: &Data) -> String {
     value.to_string().trim().to_owned()
 }
 
-fn header_indices(header: &[Data], format: Format) -> Option<Vec<usize>> {
+fn header_indices(header: &[Data], headers: &[&str]) -> Option<Vec<usize>> {
     let cells: Vec<_> = header.iter().map(cell).collect();
-    format
-        .headers()
+    headers
         .iter()
         .map(|name| cells.iter().position(|value| value == name))
         .collect()
@@ -154,188 +201,96 @@ fn amount(value: Option<&Data>) -> Result<i64> {
     }
 }
 
-fn read_details(
+fn read_table(
     workbook: &mut Workbook,
     sheet: &str,
-    format: Format,
-    errors: &mut Vec<String>,
-) -> Result<(usize, Vec<Detail>)> {
+    headers: &[&str],
+) -> Result<(Range<Data>, Vec<usize>)> {
     let range = workbook.worksheet_range(sheet).map_err(err)?;
-    let (first_row, first_col) = range
-        .start()
+    let header = range
+        .rows()
+        .next()
         .ok_or_else(|| format!("子表「{sheet}」为空"))?;
-    let header = range.rows().next().unwrap();
-    let columns = header_indices(header, format)
-        .ok_or_else(|| format!("子表「{sheet}」需要表头：{}", format.headers().join("、")))?;
-    let (start_col, end_col, amount_col, plate_col) =
-        (columns[0], columns[1], columns[2], columns[3]);
-    let vin_col = columns
-        .get(4)
-        .copied()
-        .or_else(|| header.iter().position(|value| cell(value) == "VIN"));
-    let order_col = columns.get(5).copied();
-    let pickup_total_row = if format == Format::Pickup {
-        let last = range
-            .rows()
-            .rposition(|row| row.iter().any(|value| !cell(value).is_empty()));
-        let formulas = workbook.worksheet_formula(sheet).map_err(err)?;
-        last.filter(|&row| {
-            row > 0
-                && range.rows().nth(row).is_some_and(|cells| {
-                    cells
-                        .iter()
-                        .enumerate()
-                        .all(|(col, value)| col == amount_col || cell(value).is_empty())
-                })
-                && formulas
-                    .get_value((first_row + row as u32, first_col + amount_col as u32))
-                    .is_some_and(|formula| {
-                        formula
-                            .trim()
-                            .trim_start_matches('=')
-                            .trim_start()
-                            .to_ascii_uppercase()
-                            .starts_with("SUM(")
-                    })
-        })
-    } else {
-        None
-    };
+    let columns = header_indices(header, headers)
+        .ok_or_else(|| format!("子表「{sheet}」需要表头：{}", headers.join("、")))?;
+    Ok((range, columns))
+}
 
-    let mut details = Vec::new();
-    let mut count = 0;
-    for (index, row) in range.rows().enumerate().skip(1) {
-        if pickup_total_row == Some(index) {
-            continue;
-        }
-        let field = |column| row.get(column).map_or_else(String::new, cell);
-        let start = field(start_col);
-        let end = field(end_col);
-        let plate = field(plate_col).to_uppercase();
-        let vin = vin_col.map_or_else(String::new, field).to_uppercase();
-        let order = order_col.map_or_else(String::new, field);
-        if [&start, &end, &plate, &vin, &order]
-            .iter()
-            .all(|value| value.is_empty())
-            && field(amount_col).is_empty()
-        {
-            continue;
-        }
-        count += 1;
-        let row_number = first_row as usize + index + 1;
-        if start.is_empty()
-            || end.is_empty()
-            || plate.is_empty()
-            || (format == Format::Freight && (vin.is_empty() || order.is_empty()))
-        {
-            let message = match format {
-                Format::Freight => "VIN、路线、指令单号或卡车号缺失",
-                Format::Pickup => "始发地、目的地或卡车号缺失",
-            };
-            errors.push(format!("「{sheet}」第 {row_number} 行：{message}"));
-            continue;
-        }
-        match amount(row.get(amount_col)) {
-            Ok(cents) => details.push(Detail {
-                row: row_number,
-                vin,
-                order,
-                start,
-                end,
-                plate,
-                cents,
-            }),
-            Err(error) => errors.push(format!("「{sheet}」第 {row_number} 行：{error}")),
+fn field(row: &[Data], column: usize) -> String {
+    row.get(column).map_or_else(String::new, cell)
+}
+
+struct RawDetail<'a> {
+    start: String,
+    end: String,
+    plate: String,
+    amount: Option<&'a Data>,
+}
+
+impl<'a> RawDetail<'a> {
+    fn read(row: &'a [Data], columns: &[usize]) -> Self {
+        Self {
+            start: field(row, columns[0]),
+            end: field(row, columns[1]),
+            amount: row.get(columns[2]),
+            plate: field(row, columns[3]).to_uppercase(),
         }
     }
-    Ok((count, details))
+
+    fn is_empty(&self) -> bool {
+        self.start.is_empty()
+            && self.end.is_empty()
+            && self.plate.is_empty()
+            && self.amount.is_none_or(|value| cell(value).is_empty())
+    }
+
+    fn has_route_and_plate(&self) -> bool {
+        !self.start.is_empty() && !self.end.is_empty() && !self.plate.is_empty()
+    }
+
+    fn into_detail(self, row: usize) -> Result<Detail> {
+        Ok(Detail {
+            row,
+            excluded: false,
+            start: self.start,
+            end: self.end,
+            plate: self.plate,
+            cents: amount(self.amount)?,
+        })
+    }
 }
 
 impl Batch {
-    fn prepare_sheet(
+    fn group_sheet(
         &mut self,
         tx: &Transaction<'_>,
-        workbook: &mut Workbook,
-        file_stem: &str,
         name: String,
-        format: Format,
+        prepared: PreparedSheet,
     ) -> Result<SheetImport> {
-        let (count, details) = read_details(workbook, &name, format, &mut self.errors)?;
+        let PreparedSheet {
+            fingerprint,
+            details,
+            source_total,
+            duplicates,
+            duplicate_total,
+            rows,
+        } = prepared;
         let mut sheet = SheetImport {
             name,
-            fingerprint: fingerprint(&details)?,
-            details: count,
-            source_total: details.iter().map(|detail| detail.cents).sum(),
-            duplicates: 0,
-            duplicate_total: 0,
+            fingerprint,
+            details,
+            source_total,
+            duplicates,
+            duplicate_total,
             groups: Vec::new(),
         };
-        if format == Format::Pickup {
-            let existing: Option<String> = tx.query_row(
-                "SELECT fingerprint FROM excel_pickup_sources WHERE file_stem=? AND sheet=? LIMIT 1",
-                params![file_stem, sheet.name],
-                |row| row.get(0),
-            ).optional().map_err(err)?;
-            if let Some(previous) = existing {
-                if previous == sheet.fingerprint {
-                    sheet.duplicates = details.len();
-                    sheet.duplicate_total = sheet.source_total;
-                } else {
-                    self.errors.push(format!(
-                        "子表「{}」已导入，当前内容与已入账版本不同，请先核对账目",
-                        sheet.name
-                    ));
-                }
-                return Ok(sheet);
-            }
-        }
-
         let mut groups = BTreeMap::new();
         let mut plate_order = HashMap::new();
-        for detail in &details {
+        for detail in &rows {
             plate_order.entry(&detail.plate).or_insert(detail.row);
-            let freight_source = if format == Format::Freight {
-                let key = (detail.vin.clone(), detail.order.clone());
-                let source =
-                    json!([detail.plate, detail.start, detail.end, detail.cents]).to_string();
-                let saved: Option<String> = tx.query_row(
-                    "SELECT fingerprint FROM excel_import_sources WHERE vin=? AND order_number=?",
-                    params![detail.vin, detail.order],
-                    |row| row.get(0),
-                ).optional().map_err(err)?;
-                let first_row = self.freight_seen.get(&key);
-                let previous = saved
-                    .as_deref()
-                    .or_else(|| first_row.map(|row| row.fingerprint.as_str()));
-                if let Some(previous) = previous {
-                    if previous == source {
-                        sheet.duplicates += 1;
-                        sheet.duplicate_total += detail.cents;
-                    } else {
-                        let origin = first_row.map_or_else(
-                            || "已入账明细".to_owned(),
-                            |row| format!("「{}」第 {} 行", row.sheet, row.row),
-                        );
-                        self.errors.push(format!(
-                            "「{}」第 {} 行：与{origin}的 VIN 和指令单号相同，车牌、路线或金额不一致",
-                            sheet.name, detail.row
-                        ));
-                    }
-                    continue;
-                }
-                let (vin, order) = key.clone();
-                self.freight_seen.insert(
-                    key,
-                    FreightRow {
-                        fingerprint: source.clone(),
-                        sheet: sheet.name.clone(),
-                        row: detail.row,
-                    },
-                );
-                Some((vin, order, source))
-            } else {
-                None
-            };
+            if detail.excluded {
+                continue;
+            }
 
             let mut lookup = tx
                 .prepare_cached("SELECT id FROM cars WHERE upper(trim(plate))=? LIMIT 2")
@@ -356,7 +311,10 @@ impl Batch {
                     continue;
                 }
             };
-            for name in [&detail.start, &detail.end] {
+            for name in [&detail.start, &detail.end]
+                .into_iter()
+                .filter(|name| !name.is_empty())
+            {
                 if !self.addresses.contains_key(name) {
                     let existing = tx
                         .query_row(
@@ -379,12 +337,10 @@ impl Batch {
                     start: detail.start.clone(),
                     end: detail.end.clone(),
                     cents: 0,
-                    details: 0,
-                    freight_sources: Vec::new(),
+                    source_rows: Vec::new(),
                 });
             group.cents += detail.cents;
-            group.details += 1;
-            group.freight_sources.extend(freight_source);
+            group.source_rows.push(detail.row);
         }
         sheet.groups = groups.into_values().collect();
         sheet
@@ -402,52 +358,112 @@ impl Batch {
     }
 }
 
-impl Ledger {
-    fn import_workbook<'a>(&self, path: &'a Path) -> Result<(&'a str, Format, Workbook)> {
+fn check_filename_category(ledger: &Ledger, name: &str, kind: Option<&str>) -> Result<()> {
+    let active: bool = ledger.conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM categories WHERE name=?1 AND active=1 AND kind IN ('收入','支出') AND (?2 IS NULL OR kind=?2))",
+        params![name, kind],
+        |row| row.get(0),
+    ).map_err(err)?;
+    if !active {
+        return Err(format!("文件名中的收支类型『{name}』不存在或已停用"));
+    }
+    Ok(())
+}
+
+impl ImportRegistry {
+    fn register(
+        &mut self,
+        name: &'static str,
+        handler: impl ExcelImporter + 'static,
+    ) -> Result<()> {
+        match self.handlers.entry(name) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Box::new(handler));
+                Ok(())
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                Err(format!("收支类型『{name}』已注册"))
+            }
+        }
+    }
+
+    fn resolve(&self, ledger: &Ledger, stem: &str) -> Result<RegisteredImporter<'_>> {
+        let matches: Vec<_> = self
+            .handlers
+            .iter()
+            .filter_map(|(&name, handler)| {
+                handler
+                    .matches_filename(stem, name)
+                    .then_some(RegisteredImporter {
+                        name,
+                        handler: handler.as_ref(),
+                    })
+            })
+            .collect();
+
+        match matches.as_slice() {
+            [entry] => {
+                check_filename_category(ledger, entry.name, Some(entry.handler.kind()))?;
+                Ok(RegisteredImporter {
+                    name: entry.name,
+                    handler: entry.handler,
+                })
+            }
+            [] => {
+                let (_, name) = stem
+                    .rsplit_once('_')
+                    .filter(|(prefix, name)| !prefix.trim().is_empty() && !name.trim().is_empty())
+                    .ok_or("请将文件命名为 xxx_收支类型.xlsx，例如 11月对账_运费.xlsx")?;
+                check_filename_category(ledger, name, None)?;
+                Err(format!("暂不支持收支类型『{name}』的 Excel 导入"))
+            }
+            _ => {
+                let names = matches
+                    .iter()
+                    .map(|entry| format!("『{}』", entry.name))
+                    .collect::<Vec<_>>();
+                Err(format!(
+                    "文件名同时匹配收支类型 {}，请修改文件名使其只匹配一种类型",
+                    names.join("、")
+                ))
+            }
+        }
+    }
+
+    fn open<'a>(
+        &self,
+        ledger: &Ledger,
+        path: &'a Path,
+    ) -> Result<(&'a str, RegisteredImporter<'_>, Workbook)> {
         if path
             .extension()
-            .and_then(|s| s.to_str())
-            .is_none_or(|s| !s.eq_ignore_ascii_case("xlsx"))
+            .and_then(|extension| extension.to_str())
+            .is_none_or(|extension| !extension.eq_ignore_ascii_case("xlsx"))
         {
             return Err("请选择 .xlsx 文件".into());
         }
-        let file_stem = path
+        let stem = path
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or_default();
-        let (_, category) = file_stem
-            .rsplit_once('_')
-            .filter(|(prefix, category)| !prefix.trim().is_empty() && !category.trim().is_empty())
-            .ok_or("请将文件命名为 xxx_收支类型.xlsx，例如 11月对账_运费.xlsx")?;
-        let format = if category == "提车费" {
-            Format::Pickup
-        } else {
-            Format::Freight
-        };
-        let active: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM categories WHERE name=?1 AND active=1 AND kind IN ('收入','支出') AND (?2=0 OR kind='支出'))",
-            params![category, format == Format::Pickup],
-            |row| row.get(0),
-        ).map_err(err)?;
-        if !active {
-            return Err(format!("文件名中的收支类型『{category}』不存在或已停用"));
-        }
+        let importer = self.resolve(ledger, stem)?;
         if path.metadata().map_err(err)?.len() > 20 * 1024 * 1024 {
             return Err("Excel 文件不能超过 20 MB".into());
         }
         let workbook = open_workbook(path).map_err(|error| format!("无法读取 Excel：{error}"))?;
-        Ok((file_stem, format, workbook))
+        Ok((stem, importer, workbook))
     }
 
-    pub fn excel_import_info(&self, path: &Path) -> Result<Value> {
-        let (_, format, mut workbook) = self.import_workbook(path)?;
+    fn inspect(&self, ledger: &Ledger, path: &Path) -> Result<Value> {
+        let (_, importer, mut workbook) = self.open(ledger, path)?;
+        let headers = importer.handler.headers();
         let mut sheets = Vec::new();
         for name in workbook.sheet_names() {
             let range = workbook.worksheet_range(&name).map_err(err)?;
             if range
                 .rows()
                 .next()
-                .and_then(|header| header_indices(header, format))
+                .and_then(|header| header_indices(header, headers))
                 .is_some()
             {
                 sheets.push(name);
@@ -456,17 +472,18 @@ impl Ledger {
         if sheets.is_empty() {
             return Err(format!(
                 "此文件没有符合{}格式的子表，需要表头：{}",
-                format.label(),
-                format.headers().join("、")
+                importer.name,
+                headers.join("、")
             ));
         }
         Ok(json!({
-            "path":path,"sheets":sheets,"kind":format.kind(),"default_category":format.label()
+            "path":path,"sheets":sheets,"kind":importer.handler.kind(),"default_category":importer.name
         }))
     }
 
-    pub fn import_excel(
+    fn import(
         &self,
+        ledger: &Ledger,
         path: &Path,
         options: ImportOptions,
         expected: Option<Value>,
@@ -493,9 +510,13 @@ impl Ledger {
         if sheets.is_empty() {
             return Err("请至少选择一张子表".into());
         }
-        let (file_stem, format, mut workbook) = self.import_workbook(path)?;
-        if kind != format.kind() {
-            return Err(format!("{}文件只能导入为{}", format.label(), format.kind()));
+        let (file_stem, importer, mut workbook) = self.open(ledger, path)?;
+        if kind != importer.handler.kind() {
+            return Err(format!(
+                "{}文件只能导入为{}",
+                importer.name,
+                importer.handler.kind()
+            ));
         }
         let selected: BTreeSet<_> = sheets.iter().map(String::as_str).collect();
         let ordered: Vec<_> = workbook
@@ -507,7 +528,7 @@ impl Ledger {
             return Err("所选子表不存在或重复，请重新选择文件".into());
         }
 
-        let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let tx = ledger.conn.unchecked_transaction().map_err(err)?;
         if category.is_empty() {
             return Err("请选择收支项目".into());
         }
@@ -522,10 +543,14 @@ impl Ledger {
             return Err("所选收支项目已停用或不存在，请重新打开导入窗口".into());
         }
 
+        let mut run = importer.handler.start(file_stem);
         let mut batch = Batch::default();
         let sheets = ordered
             .into_iter()
-            .map(|name| batch.prepare_sheet(&tx, &mut workbook, file_stem, name, format))
+            .map(|name| {
+                let prepared = run.read_sheet(&tx, &mut workbook, &name, &mut batch.errors)?;
+                batch.group_sheet(&tx, name, prepared)
+            })
             .collect::<Result<Vec<_>>>()?;
         let groups = sheets.iter().flat_map(|sheet| &sheet.groups);
         let mut plates_seen = BTreeSet::new();
@@ -539,16 +564,18 @@ impl Ledger {
             .iter()
             .filter_map(|(name, id)| id.is_none().then_some(name))
             .collect();
-        let entries: Vec<_> =
-            sheets
-                .iter()
-                .flat_map(|sheet| {
-                    sheet.groups.iter().map(|group| json!({
-                "sheet":sheet.name,"car":group.car,"plate":group.plate,"start":group.start,
-                "end":group.end,"cents":group.cents,"sources":group.details
-            }))
+        let entries: Vec<_> = sheets
+            .iter()
+            .flat_map(|sheet| {
+                sheet.groups.iter().map(|group| {
+                    json!({
+                        "sheet": sheet.name, "car": group.car, "plate": group.plate,
+                        "start": group.start, "end": group.end, "cents": group.cents,
+                        "sources": group.source_rows.len()
+                    })
                 })
-                .collect();
+            })
+            .collect();
         let summaries: Vec<_> = sheets.iter().map(SheetImport::summary).collect();
         let sources: Vec<_> = sheets
             .iter()
@@ -575,7 +602,7 @@ impl Ledger {
 
         for (name, id) in &mut batch.addresses {
             if id.is_none() {
-                self.save("addresses", json!({"name":name}))?;
+                ledger.save("addresses", json!({"name":name}))?;
                 *id = Some(tx.last_insert_rowid());
             }
         }
@@ -588,35 +615,49 @@ impl Ledger {
             .map_err(err)?;
             new_cars.insert(plate, tx.last_insert_rowid());
         }
+        let address_id = |name: &str| batch.addresses.get(name).copied().flatten();
         for sheet in &sheets {
             for group in &sheet.groups {
                 let car = group.car.unwrap_or_else(|| new_cars[&group.plate]);
-                self.save("entries", json!({"car_id":car,"date":date,"party":party,"kind":kind,
-                    "category":category,"amount":format!("{}.{:02}", group.cents / 100, group.cents % 100),
-                    "start_address_id":batch.addresses[&group.start],"end_address_id":batch.addresses[&group.end]}))?;
+                ledger.save(
+                    "entries",
+                    json!({
+                        "car_id": car, "date": date, "party": party, "kind": kind,
+                        "category": category,
+                        "amount": format!("{}.{:02}", group.cents / 100, group.cents % 100),
+                        "start_address_id": address_id(&group.start),
+                        "end_address_id": address_id(&group.end)
+                    }),
+                )?;
                 let entry_id = tx.last_insert_rowid();
-                // Keep the workbook labels even when a reused address has extra details.
-                tx.execute(
-                    "UPDATE entries SET start_address=?,end_address=? WHERE id=?",
-                    params![group.start, group.end, entry_id],
-                )
-                .map_err(err)?;
-                match format {
-                    Format::Freight => {
-                        for (vin, order, fingerprint) in &group.freight_sources {
-                            tx.execute("INSERT INTO excel_import_sources(vin,order_number,fingerprint,entry_id) VALUES(?,?,?,?)",
-                                params![vin,order,fingerprint,entry_id]).map_err(err)?;
-                        }
-                    }
-                    Format::Pickup => {
-                        tx.execute("INSERT INTO excel_pickup_sources(file_stem,sheet,fingerprint,entry_id) VALUES(?,?,?,?)",
-                            params![file_stem,sheet.name,sheet.fingerprint,entry_id]).map_err(err)?;
-                    }
+                if !group.start.is_empty() || !group.end.is_empty() {
+                    // Keep workbook labels even when a reused address has extra details.
+                    tx.execute(
+                        "UPDATE entries SET start_address=?,end_address=? WHERE id=?",
+                        params![group.start, group.end, entry_id],
+                    )
+                    .map_err(err)?;
                 }
+                run.record_sources(&tx, sheet, group, entry_id)?;
             }
         }
         tx.commit().map_err(err)?;
         Ok(json!({"count":entries.len(),"new_cars":new_cars.len()}))
+    }
+}
+
+impl Ledger {
+    pub fn excel_import_info(&self, path: &Path) -> Result<Value> {
+        builtin_importers().inspect(self, path)
+    }
+
+    pub fn import_excel(
+        &self,
+        path: &Path,
+        options: ImportOptions,
+        expected: Option<Value>,
+    ) -> Result<Value> {
+        builtin_importers().import(self, path, options, expected)
     }
 }
 
@@ -659,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn enabled_income_and_expense_names_allow_preview() {
+    fn freight_filenames_allow_prefix_separators_and_case_insensitive_extensions() {
         let folder = tempfile::tempdir().unwrap();
         let ledger = Ledger::open(folder.path().join("ledger.db")).unwrap();
         let mut workbook = rust_xlsxwriter::Workbook::new();
@@ -681,7 +722,7 @@ mod tests {
             .write_row(1, 0, ["VIN01", "上海", "杭州", "单号01", "120", "沪A12345"])
             .unwrap();
 
-        for name in ["11月_对账_运费.xlsx", "11月对账_油费.xlsx"] {
+        for name in ["11月_对账_运费.xlsx", "11月对账_运费.XLSX"] {
             let path = folder.path().join(name);
             workbook.save(&path).unwrap();
             let preview = ledger.import_excel(&path, options(), None).unwrap();
