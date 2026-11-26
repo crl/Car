@@ -20,6 +20,8 @@ mod batch_tests;
 mod freight;
 #[path = "excel_import/pickup.rs"]
 mod pickup;
+#[path = "excel_import/transfer_fee.rs"]
+mod transfer_fee;
 
 type Workbook = Xlsx<BufReader<File>>;
 
@@ -74,6 +76,9 @@ fn builtin_importers() -> &'static ImportRegistry {
         registry
             .register("提车费", pickup::PickupImporter)
             .expect("unique pickup importer");
+        registry
+            .register("倒板费", transfer_fee::TransferFeeImporter)
+            .expect("unique transfer fee importer");
         registry
     })
 }

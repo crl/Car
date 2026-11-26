@@ -154,6 +154,13 @@ impl Ledger {
                 );
                 CREATE INDEX IF NOT EXISTS excel_pickup_sources_sheet ON excel_pickup_sources(file_stem,sheet);",
             ).map_err(err)?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS excel_transfer_fee_sources(
+                    dispatch_number TEXT PRIMARY KEY NOT NULL, fingerprint TEXT NOT NULL,
+                    entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS excel_transfer_fee_sources_entry ON excel_transfer_fee_sources(entry_id);",
+            ).map_err(err)?;
             for (table, col, typ) in [
                 ("categories", "requires_route", "INTEGER NOT NULL DEFAULT 0"),
                 ("addresses", "region_code", "TEXT"),

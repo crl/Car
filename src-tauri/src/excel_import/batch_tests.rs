@@ -91,6 +91,156 @@ fn freight_batches_group_by_sheet_and_deduplicate_across_sheets_and_history() {
     assert_eq!(repeated["total"], 0);
 }
 
+fn transfer_sheet<'a>(
+    workbook: &'a mut Workbook,
+    name: &str,
+    rows: &[(&str, &str)],
+) -> &'a mut Worksheet {
+    let sheet = workbook.add_worksheet().set_name(name).unwrap();
+    sheet
+        .write_row(
+            0,
+            0,
+            [
+                "派车单编号",
+                "车牌号",
+                "客户名称",
+                "目的地",
+                "公司付倒板费",
+                "装车地",
+                "预付油款",
+            ],
+        )
+        .unwrap();
+    for (index, &(dispatch, amount)) in rows.iter().enumerate() {
+        sheet
+            .write_row(
+                index as u32 + 1,
+                0,
+                [
+                    dispatch,
+                    "沪A12345",
+                    "表内客户",
+                    "泉州",
+                    amount,
+                    "金华",
+                    "800",
+                ],
+            )
+            .unwrap();
+    }
+    sheet
+}
+
+#[test]
+fn transfer_fees_skip_footer_group_and_deduplicate_dispatches() {
+    let folder = tempfile::tempdir().unwrap();
+    let db = folder.path().join("ledger.db");
+    let ledger = Ledger::open(&db).unwrap();
+    let path = folder.path().join("10月份_倒板费.xlsx");
+    let mut workbook = Workbook::new();
+    let sheet = transfer_sheet(&mut workbook, "甲", &[("001", "480"), ("002", "120.50")]);
+    // Leave a blank row before the hardcoded, multi-column footer.
+    sheet
+        .write_number(4, 4, 51680)
+        .unwrap()
+        .write_number(4, 6, 927316.45)
+        .unwrap();
+    transfer_sheet(&mut workbook, "乙", &[("001", "480"), ("003", "720")]);
+    freight_sheet(&mut workbook, "其他", &[]);
+    workbook.save(&path).unwrap();
+    let info = ledger.excel_import_info(&path).unwrap();
+    assert_eq!(info["sheets"], json!(["甲", "乙"]));
+    assert_eq!(info["kind"], "支出");
+    assert_eq!(info["default_category"], "倒板费");
+    let select = || options(&["甲", "乙"], "支出", "倒板费");
+    let preview = ledger.import_excel(&path, select(), None).unwrap();
+    assert_eq!(preview["details"], 4);
+    assert_eq!(preview["duplicates"], 1);
+    assert_eq!(preview["total"], 132050);
+    assert_eq!(preview["entries"][0]["sources"], 2);
+    let saved = ledger.import_excel(&path, select(), Some(preview)).unwrap();
+    assert_eq!(saved["count"], 2);
+    let entries = ledger.data().unwrap()["entries"].clone();
+    assert!(entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["party"] == "测试往来方" && entry["date"] == "2026-11-24"));
+    drop(ledger);
+    let ledger = Ledger::open(db).unwrap();
+    let repeated = ledger.import_excel(&path, select(), None).unwrap();
+    assert_eq!(repeated["duplicates"], 4);
+    assert_eq!(repeated["entries"], json!([]));
+    assert_eq!(repeated["total"], 0);
+
+    let other = folder.path().join("补录_倒板费.xlsx");
+    let mut workbook = Workbook::new();
+    transfer_sheet(&mut workbook, "乙", &[("004", "50"), ("001", "481")]);
+    workbook.save(&other).unwrap();
+    let select = || options(&["乙"], "支出", "倒板费");
+    let conflict = ledger.import_excel(&other, select(), None).unwrap();
+    assert!(conflict["errors"][0]
+        .as_str()
+        .unwrap()
+        .contains("「乙」第 3 行：派车单编号「001」重复"));
+    assert!(ledger
+        .import_excel(&other, select(), Some(conflict))
+        .is_err());
+    assert_eq!(ledger.data().unwrap()["entries"], entries);
+}
+
+#[test]
+fn transfer_fees_reject_invalid_rows_headers_conflicts_and_stale_previews() {
+    let folder = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(folder.path().join("ledger.db")).unwrap();
+    let path = folder.path().join("本月_倒板费.xlsx");
+    let select = || options(&["明细"], "支出", "倒板费");
+    let write = |rows: &[(&str, &str)]| {
+        let mut workbook = Workbook::new();
+        transfer_sheet(&mut workbook, "明细", rows);
+        workbook.save(&path).unwrap();
+    };
+    write(&[("001", "50")]);
+    let preview = ledger.import_excel(&path, select(), None).unwrap();
+    // Same amount and route, but the dispatch that would be recorded has changed.
+    write(&[("002", "50")]);
+    assert!(ledger.import_excel(&path, select(), Some(preview)).is_err());
+
+    let mut workbook = Workbook::new();
+    let sheet = transfer_sheet(
+        &mut workbook,
+        "明细",
+        &[("001", "50"), ("001", "60"), ("002", "-1"), ("", "50")],
+    );
+    sheet.write_number(5, 4, 50).unwrap(); // An interior amount-only row is invalid.
+    sheet.write_string(6, 2, "仅有客户名称").unwrap();
+    workbook.save(&path).unwrap();
+    let preview = ledger.import_excel(&path, select(), None).unwrap();
+    let errors = preview["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 5);
+    for (index, problem) in errors.iter().enumerate() {
+        assert!(problem
+            .as_str()
+            .unwrap()
+            .contains(&format!("「明细」第 {} 行", index + 3)));
+    }
+    assert!(ledger.import_excel(&path, select(), Some(preview)).is_err());
+    assert_eq!(ledger.data().unwrap()["entries"], json!([]));
+
+    let mut workbook = Workbook::new();
+    freight_sheet(&mut workbook, "明细", &[]);
+    workbook.save(&path).unwrap();
+    assert!(ledger
+        .excel_import_info(&path)
+        .unwrap_err()
+        .contains("公司付倒板费"));
+    assert!(ledger
+        .import_excel(&path, select(), None)
+        .unwrap_err()
+        .contains("派车单编号"));
+}
+
 #[test]
 fn imports_accept_other_projects_in_the_fixed_direction_and_save_the_selection() {
     let folder = tempfile::tempdir().unwrap();
