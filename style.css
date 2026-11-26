@@ -217,3 +217,13 @@ main section:has(>table)>#subtotal,main section:has(>.scroll>table)>#subtotal{ma
 .car-driver-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-bottom:10px;font-size:12px;font-weight:600;color:#7a8aa1}.car-driver-heading input{width:210px;max-width:100%;min-height:34px;padding:5px 9px}.driver-choices label[hidden]{display:none}
 .vehicle-breadcrumb{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 6px;font-size:12px;color:var(--muted)}.vehicle-breadcrumb a{padding:0;color:var(--blue)}.vehicle-breadcrumb a:hover{text-decoration:underline}
 body:not(.guest-mode) #accountButton:not([data-account-pending]) #accountAvatar{background:#13805f}
+
+#webAdminLink{display:inline-flex;align-items:center;gap:5px;margin-top:9px;font-weight:600}
+#webAdminLink[hidden]{display:none}
+#lanStatus{font-weight:600;margin:14px 0 4px}
+#lanError{color:#bc4141;overflow-wrap:anywhere}
+.lan-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+#lanGuestRow button,#lanAdminRow button{margin-top:8px}
+#lanCertificate{margin-top:14px}
+#lanFeedback{overflow-wrap:anywhere}
+#lanFeedback:empty{display:none}

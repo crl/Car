@@ -8,7 +8,7 @@ const source=readFileSync(new URL('../desktop.js',import.meta.url),'utf8');
 function harness(){
  const calls=[],handlers={};let reloads=0;
  const location={hash:'#/cars',reload(){reloads++}};
- const context={URL,Promise,window:{addEventListener:(n,f)=>handlers[n]=f},location,history:{replaceState:(_a,_b,url)=>location.hash=url},invoke:async(command,args)=>{calls.push({command,args});return {items:[]}}};
+ const context={URL,Promise,window:{isTauri:true,addEventListener:(n,f)=>handlers[n]=f},location,history:{replaceState:(_a,_b,url)=>location.hash=url},invoke:async(command,args)=>{calls.push({command,args});return {items:[]}}};
  vm.createContext(context);
  vm.runInContext(source.replace(/^import .*;$/gm,'').replace(/export /g,'').replace(/boot\(\);\s*$/,'')+'\nglobalThis.api=service;',context);
  return {context,calls,handlers,location,get reloads(){return reloads}};

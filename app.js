@@ -1,12 +1,53 @@
 import { openExcelImport } from './excel-import.js';
 import { createTextMatcher } from './text-search.js';
-import { service, confirmDialog, alertDialog, refreshAccount, onAccountChange } from './desktop.js';
+import { service, confirmDialog, alertDialog, refreshAccount, onAccountChange, isDesktop } from './desktop.js';
+import { createLanSettings } from './lan-settings.js';
 
 let data={cars:[],entries:[],categories:[],addresses:[],drivers:[]};const $=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),money=n=>(n/100).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2}),sum=(rows,k)=>rows.filter(e=>e.kind===k).reduce((s,e)=>s+e.cents,0);
 let isAdmin=false;
-onAccountChange(value=>{isAdmin=value});
+onAccountChange((value,{expired}={})=>{
+ isAdmin=value;
+ if(expired){
+  renderLoadedRoute();
+  openAccount('登录已失效，请重新登录后再试。');
+ }
+});
 function routeShort(value){return String(value||'').split('/').map(s=>s.trim()).filter(Boolean).at(-1)||'无'}
-async function openAccount(){const modal=$('accountModal'),form=$('accountForm'),message=$('accountMessage');message.textContent='';if(isAdmin){form.innerHTML='<p>当前以管理员身份登录。</p><form id="passwordForm"><label>当前密码<input name="current" type="password" required autocomplete="current-password"></label><label>新密码（至少 6 位）<input name="next" type="password" minlength="6" required autocomplete="new-password"></label><label>确认新密码<input name="confirm" type="password" minlength="6" required autocomplete="new-password"></label><div class="row"><button type="submit">修改密码</button><button type="button" class="secondary" onclick="accountLogout()">退出登录</button></div></form>';form.querySelector('form').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;if(f.elements.next.value!==f.elements.confirm.value){message.textContent='两次输入的新密码不一致';return}try{await service.call('change_password',{currentPassword:f.elements.current.value,newPassword:f.elements.next.value});message.textContent='密码已修改'}catch(err){message.textContent=String(err)}}}else{form.innerHTML='<p>游客模式下只能查看、筛选、导出和下载备份。</p><form id="loginForm"><label>账号<input name="username" value="root" required autocomplete="username"></label><label>密码<input name="password" type="password" required autocomplete="current-password"></label><button type="submit">登录管理员</button></form>';form.querySelector('form').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await service.call('login',{username:f.elements.username.value,password:f.elements.password.value});await refreshAccount();closeAccount();await load()}catch(err){message.textContent=String(err)}}}modal.showModal()}
+function openAccount(notice=''){
+ const modal=$('accountModal'),form=$('accountForm'),message=$('accountMessage');
+ message.textContent=notice;
+ if(modal.open)return;
+ if(isAdmin&&isDesktop){
+  form.innerHTML='<p>当前以管理员身份登录。</p><form id="passwordForm"><label>当前密码<input name="current" type="password" required autocomplete="current-password"></label><label>新密码（至少 6 位）<input name="next" type="password" minlength="6" required autocomplete="new-password"></label><label>确认新密码<input name="confirm" type="password" minlength="6" required autocomplete="new-password"></label><div class="row"><button type="submit">修改密码</button><button type="button" class="secondary" onclick="accountLogout()">退出登录</button></div></form>';
+  form.querySelector('form').onsubmit=async e=>{
+   e.preventDefault();const f=e.currentTarget;
+   if(f.elements.next.value!==f.elements.confirm.value){message.textContent='两次输入的新密码不一致';return}
+   try{await service.call('change_password',{currentPassword:f.elements.current.value,newPassword:f.elements.next.value});message.textContent='密码已修改'}catch(err){message.textContent=String(err)}
+  };
+ }else if(isAdmin){
+  form.innerHTML='<p>当前以管理员身份登录。</p><button type="button" class="secondary" onclick="accountLogout()">退出登录</button>';
+ }else if(!isDesktop&&location.protocol!=='https:'){
+  form.textContent='游客可以查看和筛选账本。请打开侧栏的 HTTPS 管理员入口登录。';
+ }else{
+  const hint=isDesktop?'游客模式下只能查看、筛选、导出和下载备份。':'请使用运管家桌面端的管理员账号登录。';
+  form.innerHTML=`<p>${hint}</p><form id="loginForm"><label>账号<input name="username" value="root" required autocomplete="username"></label><label>密码<input name="password" type="password" required autocomplete="current-password"></label><button type="submit">登录管理员</button></form>`;
+  form.querySelector('form').onsubmit=async e=>{
+   e.preventDefault();
+   const f=e.currentTarget,submit=f.querySelector('button');
+   if(submit.disabled)return;
+   submit.disabled=true;
+   try{
+    await service.call('login',{username:f.elements.username.value,password:f.elements.password.value});
+    await refreshAccount();
+    if($('modal').open)clearErrors();
+    closeAccount();
+    await load();
+   }catch(err){message.textContent=String(err)}
+   finally{submit.disabled=false}
+  };
+ }
+ modal.showModal();
+}
 async function accountLogout(){
  try{await service.call('logout');await refreshAccount();closeAccount();await load()}
  catch(error){$('accountMessage').textContent=String(error)}
@@ -41,7 +82,7 @@ function carForm(id){
 function syncCategories(){let kind=$('form').elements.kind.value;$('form').elements.category.innerHTML=data.categories.filter(c=>c.active&&c.kind===kind).map(c=>`<option>${esc(c.name)}</option>`).join('')||'<option value="">请先到类型管理添加类型</option>';syncRoute()}
 function renderCategories(){document.querySelector('main').innerHTML=`<section><div class="toolbar"><h2>收支类型管理</h2><button onclick="categoryForm()" ${isAdmin?"":"hidden"}>＋ 新增类型</button></div><p class="muted">修改和删除仅影响后续记账，历史账目保留原名称。新增同名类型可恢复使用。</p><table><thead><tr><th>收支</th><th>类型名称</th><th>路线要求</th><th>操作</th></tr></thead><tbody>`+data.categories.filter(c=>c.active).map(c=>`<tr><td>${esc(c.kind)}</td><td>${esc(c.name)}</td><td>${c.requires_route?'必填':'选填'}</td><td>${isAdmin?`<button onclick="categoryForm(${c.id})">修改</button> <button onclick="removeCategory(${c.id})">删除</button>`:"只读"}</td></tr>`).join('')+'</tbody></table></section>'}
 function categoryForm(id,kind='支出'){let c=data.categories.find(c=>c.id===id)||{};kind=c.kind||kind;openForm((id?'修改':'新增')+kind+'类型',`<input type="hidden" name="kind" value="${kind}"><p class="help">所属方向：${kind}</p>`+field('类型名称 *','name',c.name,true)+`<label><input style="width:auto" type="checkbox" name="requires_route" ${c.requires_route?'checked':''}> 路线必填</label>`,'/api/categories',id)}
-async function removeCategory(id){if(!await confirmDialog('删除此类型？历史账目会保留。'))return;try{let r=await service.request('/api/categories/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});if(!r.ok)throw Error();await load()}catch{await alertDialog('删除失败，请重试')}}
+async function removeCategory(id){if(!await confirmDialog('删除此类型？历史账目会保留。'))return;try{let r=await service.request('/api/categories/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});if(!r.ok)throw Error();await load()}catch{if(!$('accountModal').open)await alertDialog('删除失败，请重试')}}
 function addressLabel(a){return a.name+(a.detail?' / '+a.detail:'')}
 function renderAddresses(){document.querySelector('main').innerHTML=`<p id="message" role="status"></p><section><div class="toolbar"><h2>地址管理</h2><input id="addressSearch" placeholder="搜索名称或详细地址" oninput="renderAddressRows()"><button onclick="addressForm()" ${isAdmin?"":"hidden"}>＋ 新增地址</button></div><p class="muted">地址可用于起点和终点。修改或删除不影响历史账目。</p><table><thead><tr><th>名称</th><th>详细地址</th><th>操作</th></tr></thead><tbody id="addressRows"></tbody></table></section>`;renderAddressRows()}
 function renderAddressRows(){const matchText=createTextMatcher($('addressSearch').value);$('addressRows').innerHTML=data.addresses.filter(a=>a.active&&matchText(addressLabel(a))).map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(a.detail)}</td><td>${isAdmin?`<button onclick="addressForm(${a.id})">修改</button> <button onclick="removeAddress(${a.id})">删除</button>`:'只读'}</td></tr>`).join('')||`<tr><td colspan="3">${isAdmin?'暂无地址，请新增地址。':'暂无地址'}</td></tr>`}
@@ -323,7 +364,8 @@ function arrangeWorkspace(){
  const ledger=page==='/entries';
  $('ledger-section').hidden=!ledger;
  $('vehicle-list').hidden=ledger;
- document.querySelector('.header-actions').innerHTML=isAdmin?(ledger?'<button type="button" class="secondary" onclick="batchImport()">批量导入</button><button onclick="entryForm()">＋ 记一笔账</button>':'<button onclick="carForm()">＋ 新增车辆</button>'):'';
+ const batchButton=isDesktop?'<button type="button" class="secondary" onclick="batchImport()">批量导入</button>':'';
+ document.querySelector('.header-actions').innerHTML=isAdmin?(ledger?batchButton+'<button onclick="entryForm()">＋ 记一笔账</button>':'<button onclick="carForm()">＋ 新增车辆</button>'):'';
  document.querySelector('header small').textContent=ledger?'查询收支明细，核对每一笔账目':'管理车辆资料，查看单车经营收支';
 }
 
@@ -347,7 +389,7 @@ function openProjectFilter(button){const panel=$('projectPopover');if(panel.matc
 function renderVehicleTotals(income,expense){
  let footer=$('vehicleTotals');if(!footer){document.querySelector('.vehicle-entries').closest('.scroll').insertAdjacentHTML('afterend','<div id="vehicleTotals" class="ledger-totals" aria-live="polite"></div>');footer=$('vehicleTotals')}
  let balance=income-expense;
- footer.innerHTML=`<div class="totals-label">当前明细合计 <small>${currentVehicleRows.length} 笔</small></div><div><span>收入</span><strong class="income">+¥${money(income)}</strong></div><div><span>支出</span><strong class="expense">−¥${money(expense)}</strong></div><div><span>差额</span><strong class="${balance>0?'income':balance<0?'expense':'muted'}">${balance>0?'+':balance<0?'−':''}¥${money(Math.abs(balance))}</strong></div><button type="button" onclick="exportVehicleRows()">导出当前明细</button>`;
+ footer.innerHTML=`<div class="totals-label">当前明细合计 <small>${currentVehicleRows.length} 笔</small></div><div><span>收入</span><strong class="income">+¥${money(income)}</strong></div><div><span>支出</span><strong class="expense">−¥${money(expense)}</strong></div><div><span>差额</span><strong class="${balance>0?'income':balance<0?'expense':'muted'}">${balance>0?'+':balance<0?'−':''}¥${money(Math.abs(balance))}</strong></div>${isDesktop?'<button type="button" onclick="exportVehicleRows()">导出当前明细</button>':''}`;
 }
 async function exportVehicleRows(){if(!currentVehicleRows.length){await alertDialog('当前没有可导出的收支明细，请先记账或调整筛选条件。');return}try{const car=data.cars.find(c=>c.id===detailId);const result=await service.call('export_ledger',{ids:currentVehicleRows.map(e=>e.id),filename:(detailId===null?'All-vehicles':vehicleLabel(car))+'-收支明细.xlsx'});if(!result.cancelled)notify('Excel明细已导出：'+result.path)}catch(e){notify('导出失败：'+String(e))}}
 
@@ -506,7 +548,7 @@ function installVehicleOverviewDates(){if(page!=='/'&&page!=='/cars')return;let 
 const overviewDateRender=render;render=function(){overviewDateRender();if(page==='/'||page==='/cars'){const from=$('start').value,to=$('end').value;const active=!!(from||to);const cards=document.querySelectorAll('#stats .stat .muted');if(active){cards[1].textContent='期间收入';cards[2].textContent='期间支出'}$('vehicleDateHint').textContent=from&&to&&from>to?'开始日期不能晚于结束日期，请调整日期。':active?'统计期间：'+(from||'不限开始')+' 至 '+(to||'不限结束')+'；无收支的车辆显示为零。':'全部日期 · 显示各车累计收支';}}
 
 function vehicleOverviewFilteredRows(){const matchText=createTextMatcher($('search').value),ids=new Set(data.cars.filter(c=>(ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(c.id)))&&carMatches(c,matchText)).map(c=>c.id));return {cars:ids.size,rows:vehicleOverviewEntries().filter(e=>ids.has(e.car_id))}}
-function renderVehicleOverviewTotals(){if(page!=='/'&&page!=='/cars')return;const {cars,rows}=vehicleOverviewFilteredRows(),income=sum(rows,'收入'),expense=sum(rows,'支出'),balance=income-expense;let footer=$('vehicleOverviewTotals');if(!footer){$('vehicle-list').insertAdjacentHTML('beforeend','<div id="vehicleOverviewTotals" class="ledger-totals" aria-live="polite"></div>');footer=$('vehicleOverviewTotals')}footer.innerHTML=`<div class="totals-label">当前车辆合计<small>${cars} 辆 · ${rows.length} 笔</small></div><div><span>收入</span><strong class="income">+¥${money(income)}</strong></div><div><span>支出</span><strong class="expense">−¥${money(expense)}</strong></div><div><span>差额</span><strong class="${balance>0?'income':balance<0?'expense':'muted'}">${balance>0?'+':balance<0?'−':''}¥${money(Math.abs(balance))}</strong></div><button onclick="exportVehicleOverview()">导出当前明细</button>`}
+function renderVehicleOverviewTotals(){if(page!=='/'&&page!=='/cars')return;const {cars,rows}=vehicleOverviewFilteredRows(),income=sum(rows,'收入'),expense=sum(rows,'支出'),balance=income-expense;let footer=$('vehicleOverviewTotals');if(!footer){$('vehicle-list').insertAdjacentHTML('beforeend','<div id="vehicleOverviewTotals" class="ledger-totals" aria-live="polite"></div>');footer=$('vehicleOverviewTotals')}footer.innerHTML=`<div class="totals-label">当前车辆合计<small>${cars} 辆 · ${rows.length} 笔</small></div><div><span>收入</span><strong class="income">+¥${money(income)}</strong></div><div><span>支出</span><strong class="expense">−¥${money(expense)}</strong></div><div><span>差额</span><strong class="${balance>0?'income':balance<0?'expense':'muted'}">${balance>0?'+':balance<0?'−':''}¥${money(Math.abs(balance))}</strong></div>${isDesktop?'<button type="button" onclick="exportVehicleOverview()">导出当前明细</button>':''}`}
 async function exportVehicleOverview(){currentVehicleRows=vehicleOverviewFilteredRows().rows;await exportVehicleRows()}
 const renderWithOverviewTotals=render;render=function(){renderWithOverviewTotals();renderVehicleOverviewTotals();renderVehicleDriverFilter()};
 
@@ -533,19 +575,41 @@ async function deleteEditedRecord(){
  finally{save.disabled=false;button.disabled=false;button.textContent='删除';}
 }
 function editLedgerEntry(id){const entry=data.entries.find(e=>e.id===id);if(!entry)return;entryForm(entry.car_id);deletionContext={resource:'entries',id:entry.id,message:`确定删除这笔收支记录？\n${vehicleLabel(data.cars.find(car=>car.id===entry.car_id))} · ${entry.date} · ${entry.kind} · ${entry.category} · ¥${money(entry.cents)}\n确认后删除此记录。`};$('deleteRecord').hidden=false;$('title').textContent='编辑收支记录';const f=$('form').elements;$('fields').insertAdjacentHTML('beforeend',`<input type="hidden" name="id" value="${entry.id}">`);f.car_id.value=entry.car_id;f.date.value=entry.date;setKind(entry.kind);if(![...f.category.options].some(o=>o.value===entry.category)){const option=document.createElement('option');option.value=entry.category;option.textContent=entry.category+'（历史项目）';f.category.append(option)}f.category.value=entry.category;f.amount.value=(entry.cents/100).toFixed(2);f.party.value=entry.party||'';f.note.value=entry.note||'';for(const side of ['start','end']){const addressId=entry[side+'_address_id'];let address=data.addresses.find(a=>a.id===addressId);f[side+'_address'].value=address?addressLabel(address):'';f[side+'_address_detail'].value=entry[side+'_address_detail']||''}syncRoute();initialForm=formState()}
-let storageBusy=false;
+let storageBusy=false,refreshLanSettings,lanTimer;
 function closeSiteSettings(){if(!storageBusy)$('settingsModal').close()}
 function closeAccount(){const modal=$('accountModal');if(modal.open)modal.close()}
 $('accountModal').addEventListener('close',()=>{
  $('accountForm').replaceChildren();
- $('accountButton').focus();
+ if(!$('modal').open&&!$('regionModal').open)$('accountButton').focus();
 });
-async function openSiteSettings(){$('settingsMessage').textContent='正在读取设置…';$('settingsModal').showModal();try{const r=await service.request('/api/settings');if(!r.ok)throw Error();const settings=await r.json();$('settingsDbPath').value=settings.database_path;$('settingsBackupPath').value=settings.backup_path;$('settingsDefaultPath').textContent='默认路径：'+settings.default_path;$('settingsMessage').textContent=''}catch{$('settingsMessage').textContent='读取设置失败，请关闭后重试。'}}
+async function openSiteSettings(){
+ if(!isDesktop)return;
+ $('settingsMessage').textContent='正在读取设置…';
+ $('settingsModal').showModal();
+ refreshLanSettings??=createLanSettings($('settingsModal').querySelector('.modal-body'),service);
+ const lanReady=refreshLanSettings(isAdmin);
+ lanTimer??=setInterval(()=>{
+  if($('settingsModal').open)return refreshLanSettings(isAdmin,{quiet:true});
+ },5000);
+ try{
+  const r=await service.request('/api/settings');if(!r.ok)throw Error();
+  const settings=await r.json();
+  $('settingsDbPath').value=settings.database_path;
+  $('settingsBackupPath').value=settings.backup_path;
+  $('settingsDefaultPath').textContent='默认路径：'+settings.default_path;
+  $('settingsMessage').textContent='';
+ }catch{$('settingsMessage').textContent='读取设置失败，请关闭后重试。'}
+ await lanReady;
+}
 function setStorageBusy(busy){storageBusy=busy;$('downloadBackup').disabled=busy;$('restoreBackup').disabled=busy}
 async function downloadLedgerBackup(){await nativeStorage('backup_ledger')}
 async function restoreLedgerBackup(){await nativeStorage('restore_ledger')}
 async function nativeStorage(command){if(storageBusy)return;setStorageBusy(true);try{const result=await service.call(command);$('settingsMessage').textContent=result.cancelled?'已取消':('操作成功：'+result.path+(result.safety_backup?' · 原账本备份：'+result.safety_backup:''));if(!result.cancelled&&command==='restore_ledger'){vehicleProjectSelection=null;vehicleKindSelection=null;ledgerVehicleSelection=null;vehicleDriverSelection=null;for(const side of ['start','end','party'])vehicleRouteSelection[side]=null;await load()}}catch(e){$('settingsMessage').textContent=String(e)}finally{setStorageBusy(false)}}
 $('settingsModal').addEventListener('cancel',e=>{if(storageBusy)e.preventDefault()});
+$('settingsModal').addEventListener('close',()=>{
+ clearInterval(lanTimer);
+ lanTimer=undefined;
+});
 
 Object.assign(window,{openAccount,closeAccount,accountLogout,batchImport:()=>openExcelImport({service,esc,money,notify,load,bindCalendarInput,categories:data.categories}),deleteEditedRecord,customAddressForm,renderCustomAddressRows,renderVehicleDriverFilter,toggleAllVehicleDrivers,toggleVehicleDriver,openVehicleDriverFilter,driverForm,renderDrivers,renderDriverRows,removeDriver,addressForm,addressKey,addressLabel,allVehicleProjects,arrangeWorkspace,calendarToday,carForm,categoryForm,changeCalendarMonth,changeVehiclePageSize,chooseAddress,chooseCalendarDay,clearErrors,clearFilters,closeRegion,closeSiteSettings,collapseRegionTree,colorBalances,confirmRegion,downloadLedgerBackup,editLedgerEntry,entryForm,expandRegionNode,expandRegionNodeData,exportVehicleOverview,exportVehicleRows,field,filterCategories,formState,goVehiclePage,hideSuggestions,inlineAddress,installKindHeaderFilter,installLedgerCalendar,installLedgerVehicleFilter,installProjectHeaderFilter,installRouteHeaderFilters,installVehicleOverviewDates,ledgerScope,ledgerVehicleChoices,load,locateRegion,nativeStorage,notify,openForm,openKindFilter,openLedgerCalendar,openLedgerVehicleFilter,openProjectFilter,openRegion,openRegionTree,openRouteFilter,openSiteSettings,options,refreshAddresses,refreshTables,regionChildData,regionChildren,regionFetch,regionNodeMarkup,removeAddress,removeCategory,render,renderAddressRows,renderAddresses,renderAllLedger,renderCategories,renderKindFilters,renderLedgerCalendar,renderLedgerVehicleFilter,renderProjectFilters,renderRouteFilters,renderVehicleDetail,renderVehicleEntries,renderVehicleOverviewTotals,renderVehiclePagination,renderVehicleTotals,requestClose,restoreEntry,restoreLedgerBackup,routeFields,routeMatches,routeValue,searchRegions,sectionFields,selectRegion,setKind,setStorageBusy,showFieldError,sortVehicleOverview,suggest,swapRoute,syncCategories,syncRoute,toggleAllKinds,toggleAllLedgerVehicles,toggleAllRoutes,toggleKind,toggleLedgerVehicle,toggleOverviewAmountSort,toggleRoute,toggleVehicleDateSort,toggleVehicleLedgerSort,toggleVehicleProject,updateProjectHeader,updateVehicleDateHeader,vehicleLabel,vehicleOverviewEntries,vehicleOverviewFilteredRows,vehicleProjects,vehicleRouteChoices});
 window.frontendDirty=()=>$("modal").open&&(formState()!==initialForm||Boolean(subview));

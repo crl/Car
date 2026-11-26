@@ -4,11 +4,21 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
 import { createUpdater } from './updater.js';
+import { createWebService } from './web-service.js';
 let pending=0;
 let updater=null;
+export const isDesktop=Boolean(window.isTauri);
+const secureWeb=location.protocol==='https:';
+const web=isDesktop?null:createWebService(window.fetch.bind(window),{
+ secure:secureWeb,onSessionExpired:()=>publishAccount(false,{expired:true})
+});
 export const service={
-  async call(command,args){pending++;try{return await invoke(command,args)}finally{pending--}},
+  async call(command,args){pending++;try{return await (web?web.call(command,args):invoke(command,args))}finally{pending--}},
   async request(path,options={}){
+    if(web){
+      pending++;
+      try{return await web.request(path,options)}finally{pending--}
+    }
     const url=new URL(path,'https://local.invalid');
     let value;
     if(url.pathname==='/api/data')value=await this.call('read_data');
@@ -22,7 +32,43 @@ export const service={
 export let isAdmin=false;
 const accountListeners=new Set();
 export function onAccountChange(listener){accountListeners.add(listener);return()=>accountListeners.delete(listener)}
-export async function refreshAccount(){const status=await service.call('account_status');isAdmin=!!status.authenticated;document.body.classList.toggle('guest-mode',!isAdmin);const name=document.querySelector('#accountName'),avatar=document.querySelector('#accountAvatar'),hint=document.querySelector('#accountHint');if(name)name.textContent=isAdmin?'管理员':'游客';if(avatar)avatar.textContent=isAdmin?'管':'游';if(hint)hint.textContent=isAdmin?'已登录':'只读模式';const button=document.querySelector('#accountButton');if(button){button.removeAttribute('data-account-pending');button.disabled=false;}accountListeners.forEach(listener=>listener(isAdmin));}
+let adminHref=null;
+function updateBrowserAdminLink(){
+ if(isDesktop||secureWeb)return;
+ const link=document.querySelector('#webAdminLink');
+ if(!link)return;
+ link.hidden=!adminHref;
+ if(adminHref){
+  const destination=new URL(adminHref);
+  destination.hash=location.hash||'#/cars';
+  link.href=destination.href;
+ }else link.removeAttribute('href');
+}
+function publishAccount(authenticated,options){
+ isAdmin=authenticated;
+ document.body.classList.toggle('guest-mode',!isAdmin);
+ document.querySelector('#accountName').textContent=isAdmin?'管理员':'游客';
+ document.querySelector('#accountAvatar').textContent=isAdmin?'管':'游';
+ document.querySelector('#accountHint').textContent=isAdmin?'已登录':'只读模式';
+ const button=document.querySelector('#accountButton');
+ button.removeAttribute('data-account-pending');
+ button.disabled=false;
+ updateBrowserAdminLink();
+ accountListeners.forEach(listener=>listener(isAdmin,options));
+}
+export async function refreshAccount(){
+ const status=await service.call('account_status');
+ if(web&&!secureWeb){
+  adminHref=null;
+  if(status.admin_url){
+   try{
+    const url=new URL(status.admin_url);
+    if(url.protocol==='https:'&&!url.username&&!url.password)adminHref=url.href;
+   }catch{ /* Keep the guest view accessible if the address is unavailable. */ }
+  }
+ }
+ publishAccount((isDesktop||secureWeb)&&Boolean(status.authenticated));
+}
 let dialogQueue=Promise.resolve();
 export function confirmDialog(message){const next=dialogQueue.then(()=>new Promise(resolve=>{const d=document.createElement('dialog');d.className='frontend-dialog frontend-confirm';const p=document.createElement('p');p.textContent=message;d.append(p);for(const [text,value] of [['取消',false],['确定',true]]){const b=document.createElement('button');b.textContent=text;b.onclick=()=>{d.close();d.remove();resolve(value)};d.append(b)}d.addEventListener('cancel',e=>{e.preventDefault();d.remove();resolve(false)});document.body.append(d);d.showModal()}));dialogQueue=next.catch(()=>{});return next}
 export async function alertDialog(message){await confirmDialog(message)}
@@ -40,10 +86,16 @@ window.addEventListener('hashchange',async()=>{
   if(window.frontendDirty?.()&&!await confirmDialog('还有未保存的内容，确定放弃修改？'))return;
   if(pending||updater?.busy||window.frontendBusy?.())return;
   if(!window.navigateWorkspace)return;
-  acceptedHash=next;history.replaceState(null,'',acceptedHash);window.navigateWorkspace(acceptedHash);
+  acceptedHash=next;history.replaceState(null,'',acceptedHash);window.navigateWorkspace(acceptedHash);updateBrowserAdminLink();
  }finally{routing=false}
 });
 async function boot(){try{
+ if(!isDesktop){
+  document.querySelectorAll('[data-desktop-only]').forEach(element=>element.remove());
+  document.querySelector('#ledgerLocation').textContent='局域网账本';
+  await import('./app.js');
+  return;
+ }
  await getCurrentWindow().onCloseRequested(async e=>{e.preventDefault();await requestExit()});
  await listen('request-app-close',requestExit);
  const status=await service.call('startup_status');

@@ -10,6 +10,7 @@ fn update_reservation_rejects_active_work_and_blocks_new_ledger_tasks() {
         allow_exit: AtomicBool::new(false),
         updating: AtomicBool::new(false),
         admin_password_hash: Mutex::new(password_hash("root")),
+        lan_credential_generation: AtomicU64::new(0),
         authenticated: AtomicBool::new(false),
         session_file: dir.path().join("admin-session"),
     });

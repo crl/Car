@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod export;
+mod lan;
+mod lan_certificate;
+mod lan_server;
 mod ledger;
 mod regions;
 #[cfg(test)]
@@ -9,10 +12,11 @@ use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
+use subtle::ConstantTimeEq;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -23,6 +27,7 @@ struct DesktopState {
     allow_exit: AtomicBool,
     updating: AtomicBool,
     admin_password_hash: Mutex<String>,
+    lan_credential_generation: AtomicU64,
     authenticated: AtomicBool,
     session_file: PathBuf,
 }
@@ -46,6 +51,9 @@ async fn task<T: Send + 'static>(
             .map_err(|_| "账本忙，请重启应用".to_string())?;
         if state.updating.load(Ordering::SeqCst) {
             return Err("更新正在安装，请稍候".into());
+        }
+        if state.allow_exit.load(Ordering::SeqCst) {
+            return Err("应用正在退出，请稍候".into());
         }
         f(&state)
     })
@@ -121,6 +129,23 @@ async fn read_data(state: tauri::State<'_, Shared>) -> Result<Value, String> {
 fn password_hash(password: &str) -> String {
     format!("{:x}", Sha256::digest(password.as_bytes()))
 }
+
+enum LanLoginError {
+    Invalid,
+    DefaultPassword,
+    Unavailable,
+}
+
+fn verify_lan_password(state: &DesktopState, username: &str, password: &str) -> Result<u64, LanLoginError> {
+    let hash = state.admin_password_hash.lock().map_err(|_| LanLoginError::Unavailable)?;
+    if username != "root" || !bool::from(hash.as_bytes().ct_eq(password_hash(password).as_bytes())) {
+        return Err(LanLoginError::Invalid);
+    }
+    if password == "root" {
+        return Err(LanLoginError::DefaultPassword);
+    }
+    Ok(state.lan_credential_generation.load(Ordering::SeqCst))
+}
 #[tauri::command]
 fn account_status(state: tauri::State<'_, Shared>) -> Value {
     json!({"authenticated":state.authenticated.load(Ordering::SeqCst)})
@@ -146,21 +171,30 @@ fn logout(state: tauri::State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-fn change_password(state: tauri::State<'_, Shared>, current_password: String, new_password: String) -> Result<(), String> {
-    if !state.authenticated.load(Ordering::SeqCst) { return Err("请先以管理员身份登录".into()); }
-    if new_password.trim().len() < 6 { return Err("新密码至少需要 6 位".into()); }
-    let mut hash = state.admin_password_hash.lock().map_err(|_| "账号状态不可用")?;
-    if password_hash(&current_password) != *hash { return Err("当前密码错误".into()); }
-    let next_hash = password_hash(&new_password);
-    let path = state.path.with_file_name("admin-password.sha256");
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("密码保存路径无效")?)
-        .map_err(|e| e.to_string())?;
-    use std::io::Write;
-    file.write_all(next_hash.as_bytes()).map_err(|e| e.to_string())?;
-    file.as_file().sync_all().map_err(|e| e.to_string())?;
-    file.persist(path).map_err(|e| e.to_string())?;
-    *hash = next_hash;
-    Ok(())
+async fn change_password(state: tauri::State<'_, Shared>, current_password: String, new_password: String) -> Result<(), String> {
+    task(state.inner().clone(), move |state| {
+        if !state.authenticated.load(Ordering::SeqCst) {
+            return Err("请先以管理员身份登录".into());
+        }
+        if new_password.trim().len() < 6 {
+            return Err("新密码至少需要 6 位".into());
+        }
+        let mut hash = state.admin_password_hash.lock().map_err(|_| "账号状态不可用")?;
+        if password_hash(&current_password) != *hash {
+            return Err("当前密码错误".into());
+        }
+        let next_hash = password_hash(&new_password);
+        let path = state.path.with_file_name("admin-password.sha256");
+        let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("密码保存路径无效")?)
+            .map_err(|error| error.to_string())?;
+        use std::io::Write;
+        file.write_all(next_hash.as_bytes()).map_err(|error| error.to_string())?;
+        file.as_file().sync_all().map_err(|error| error.to_string())?;
+        file.persist(path).map_err(|error| error.to_string())?;
+        *hash = next_hash;
+        state.lan_credential_generation.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }).await
 }
 #[tauri::command]
 async fn save_record(
@@ -198,11 +232,17 @@ async fn import_excel(
     }).await
 }
 
+fn region_data(parent: &str, q: &str, all: bool) -> Value {
+    let items = if all {
+        regions::query_with_limit(parent, q, usize::MAX)
+    } else {
+        regions::query(parent, q)
+    };
+    json!({"items":items,"version":"2023-06-30","coverage":"大陆31省级地区（不含港澳台）"})
+}
 #[tauri::command]
 async fn query_regions(parent: String, q: String, all: Option<bool>) -> Result<Value, String> {
-    Ok(
-        json!({"items":if all.unwrap_or(false) { regions::query_with_limit(&parent, &q, usize::MAX) } else { regions::query(&parent, &q) },"version":"2023-06-30","coverage":"大陆31省级地区（不含港澳台）"}),
-    )
+    Ok(region_data(&parent, &q, all.unwrap_or(false)))
 }
 #[tauri::command]
 fn read_settings(state: tauri::State<'_, Shared>) -> Value {
@@ -272,12 +312,18 @@ async fn export_ledger(
     })
     .await
 }
-#[tauri::command]
-fn exit_app(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
+fn reserve_exit(state: &DesktopState) -> Result<(), String> {
+    let _lock = state.operations.try_lock().map_err(|_| "账本操作尚未完成，请稍后退出")?;
     if state.busy.load(Ordering::SeqCst) > 0 || state.updating.load(Ordering::SeqCst) {
         return Err("账本操作尚未完成，请稍后退出".into());
     }
     state.allow_exit.store(true, Ordering::SeqCst);
+    Ok(())
+}
+#[tauri::command]
+async fn exit_app(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
+    reserve_exit(state.inner())?;
+    lan::shutdown(&app).await;
     app.exit(0);
     Ok(())
 }
@@ -302,13 +348,14 @@ fn cancel_update(state: tauri::State<'_, Shared>) {
     release_update(state.inner());
 }
 #[tauri::command]
-fn restart_after_update(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
+async fn restart_after_update(app: tauri::AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
     if !state.updating.load(Ordering::SeqCst) {
         return Err("尚未准备好重启更新".into());
     }
     // Ordinary Quit requests stay blocked throughout macOS bundle replacement.
     // Windows' updater exits directly after launching its installer.
     state.allow_exit.store(true, Ordering::SeqCst);
+    lan::shutdown(&app).await;
     app.restart();
 }
 fn main() {
@@ -349,9 +396,12 @@ fn main() {
                 allow_exit: AtomicBool::new(false),
                 updating: AtomicBool::new(false),
                 admin_password_hash: Mutex::new(stored_hash),
+                lan_credential_generation: AtomicU64::new(0),
                 authenticated: AtomicBool::new(authenticated),
                 session_file,
             }));
+            app.manage(lan::SharingState::new(lan::Sharing::new(folder.join("lan"))));
+            lan::watch(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -380,6 +430,9 @@ fn main() {
             restore_ledger,
             export_ledger,
             exit_app,
+            lan::lan_status,
+            lan::set_lan_sharing,
+            lan::export_lan_certificate,
             prepare_update,
             cancel_update,
             restart_after_update
