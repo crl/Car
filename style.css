@@ -220,10 +220,20 @@ body:not(.guest-mode) #accountButton:not([data-account-pending]) #accountAvatar{
 
 #webAdminLink{display:inline-flex;align-items:center;gap:5px;margin-top:9px;font-weight:600}
 #webAdminLink[hidden]{display:none}
-#lanStatus{font-weight:600;margin:14px 0 4px}
-#lanError{color:#bc4141;overflow-wrap:anywhere}
-.lan-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-#lanGuestRow button,#lanAdminRow button{margin-top:8px}
-#lanCertificate{margin-top:14px}
-#lanFeedback{overflow-wrap:anywhere}
+#lanSettings{--lan-action-width:6.25rem;display:grid;gap:8px}
+#lanSettings button{min-height:44px}
+.lan-inline-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.lan-setting-row{display:grid;grid-template-columns:5rem minmax(0,1fr) var(--lan-action-width);align-items:center;gap:8px}
+#lanSettings .lan-setting-row label{margin:0}
+.lan-setting-row :is(input,select){min-width:0;margin:0}
+#lanToggle.danger{background:#b93143;border-color:transparent;color:#fff}
+.lan-inline-row p{margin:0;min-width:0;overflow-wrap:anywhere}
+.lan-inline-row button{flex:0 0 var(--lan-action-width);margin-left:auto}
+#lanError{color:#bc4141}
+#lanFeedback{margin:0;overflow-wrap:anywhere}
 #lanFeedback:empty{display:none}
+@media(max-width:480px){
+ .lan-setting-row{grid-template-columns:minmax(0,1fr) var(--lan-action-width);gap:4px 8px}
+ .lan-setting-row label{grid-column:1/-1}
+ .lan-setting-row :is(input,select){min-height:44px}
+}

@@ -195,23 +195,28 @@ test('desktop network choice starts sharing and exposes copy, certificate export
   await w.openSiteSettings();
   const section=d.querySelector('#lanSettings'),select=section.querySelector('select');
   assert.match(section.textContent,/局域网共享/);
-  assert.match(section.textContent,/未开启/);
+  assert.doesNotMatch(section.textContent,/未开启/);
   assert.equal(select.options.length,networks.length);
+  const toggle=section.querySelector('#lanToggle');
+  assert.equal(toggle?.textContent,'开启共享');
   select.value=networks[0].id;
-  section.querySelector('#lanStart').click();
+  toggle.click();
   await tick();
-  assert.match(section.textContent,/运行中/);
+  assert.doesNotMatch(section.textContent,/运行中/);
+  assert.equal(toggle.textContent,'停止共享');
+  assert.equal(section.querySelector('#lanRetry').hidden,true);
   assert.equal(section.querySelector('#lanGuestUrl').value,guestUrl);
   assert.equal(section.querySelector('#lanAdminUrl').value,adminUrl);
   section.querySelector('#lanCopyGuest').click();
+  section.querySelector('#lanCopyAdmin').click();
   await tick();
-  assert.deepEqual(h.clipboard,[guestUrl]);
+  assert.deepEqual(h.clipboard,[guestUrl,adminUrl]);
   section.querySelector('#lanExportCertificate').click();
   await tick();
   assert.equal(h.calls.at(-1)[0],'export_lan_certificate');
-  section.querySelector('#lanStop').click();
+  toggle.click();
   await tick();
-  assert.match(section.textContent,/未开启/);
+  assert.equal(toggle.textContent,'开启共享');
   assert.equal(section.querySelector('#lanGuestUrl').value,'');
  }finally{h.close()}
 });
@@ -221,10 +226,17 @@ test('desktop sharing surfaces the listener error returned by the host',async()=
  try{
   await w.openSiteSettings();
   h.lanResult({...sharing,enabled:true,network:networks[0].id,error:'端口已被占用'});
-  d.querySelector('#lanStart').click();
+  const toggle=d.querySelector('#lanToggle');
+  toggle?.click();
   await tick();
   assert.match(d.querySelector('#lanSettings').textContent,/端口已被占用/);
-  assert.equal(d.querySelector('#lanStart').disabled,false);
+  assert.equal(toggle.textContent,'停止共享');
+  const retry=d.querySelector('#lanRetry');
+  assert.equal(retry.hidden,false);
+  retry.click();
+  await tick();
+  assert.equal(d.querySelector('#lanGuestRow').hidden,false);
+  assert.equal(retry.hidden,true);
  }finally{h.close()}
 });
 
