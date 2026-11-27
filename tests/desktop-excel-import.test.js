@@ -14,7 +14,7 @@ const projects = [
   { kind: '支出', name: '工资', active: false },
 ];
 
-async function openImport(t, { kind = '收入', defaultCategory = '运费', requiresParty = true, categories = projects, sheets = ['甲表', '乙表'] } = {}) {
+async function openImport(t, { kind = '收入', defaultCategory = '运费', requiresParty = true, categories = projects, sheets = ['甲表', '乙表'], sources } = {}) {
   const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only' });
   t.after(() => dom.window.close());
   const calls = [];
@@ -43,10 +43,10 @@ async function openImport(t, { kind = '收入', defaultCategory = '运费', requ
   };
   await openExcelImport({
     service: { call: async (command, args) => {
-      if (command === 'pick_excel_import') return { path: 'test.xlsx', sheets, kind, default_category: defaultCategory, requires_party: requiresParty };
+      if (command === 'pick_excel_import') return { path: 'test.xlsx', sheets, sources, kind, default_category: defaultCategory, requires_party: requiresParty };
       assert.equal(command, 'import_excel');
       calls.push(structuredClone(args));
-      return { ...preview, party: args.options.party, kind: args.options.kind, category: args.options.category };
+      return { ...preview, party: args.options.party, kind: args.options.kind, category: args.options.category ?? args.options.sources.map(s => s.category).join('、') };
     } },
     categories,
     esc: value => String(value), money: cents => (cents / 100).toFixed(2),
@@ -70,6 +70,37 @@ test('司机工资 can preview and confirm without a counterparty', async t => {
   await dialog.querySelector('[data-import]').onclick();
   assert.equal(calls.length, 2);
   assert.ok(calls.every(call => call.options.party === ''));
+});
+
+test('mixed payroll can select only the fee from a shared sheet', async t => {
+  const sources = ['司机工资','外包服务费'].map(category => ({sheet:'十月',category,enabled:true}));
+  const {dialog,form,calls,preview,Event} = await openImport(t, {kind:'支出',defaultCategory:'司机工资',requiresParty:false,sources});
+  assert.equal(form.elements.category, undefined);
+  assert.equal(form.elements.party, undefined);
+  const [salary,fee] = form.querySelectorAll('[name="sheets"]');
+  assert.ok(salary.checked && fee.checked);
+  salary.checked=false;
+  salary.dispatchEvent(new Event('input',{bubbles:true}));
+  preview.sheets = [{sheet:'十月',category:'外包服务费',details:2,source_total:201,duplicates:0,duplicate_total:0,count:1,total:201}];
+  preview.entries = [{sheet:'十月', category:'外包服务费',plate:'沪A12345',start:'',end:'',cents:201,note:'由2笔合并'}];
+  await dialog.querySelector('[data-check]').onclick();
+  assert.deepEqual(calls[0].options.sources,[{sheet:'十月',category:'外包服务费'}]);
+  assert.match(dialog.querySelector('[data-preview]').textContent,/外包服务费 · 明细 2 条 · 可入账 1 笔（¥2.01）/);
+  await dialog.querySelector('[data-import]').onclick();
+  assert.deepEqual(calls[1].options,calls[0].options);
+});
+
+test('select all leaves a disabled fee project unchecked', async t => {
+  const sources=[{sheet:'工资',category:'司机工资',enabled:true},{sheet:'外包',category:'外包服务费',enabled:false}];
+  const {dialog,form,calls}=await openImport(t,{kind:'支出',defaultCategory:'司机工资',requiresParty:false,sources});
+  form.querySelector('[data-clear-sheets]').click();
+  form.querySelector('[data-select-sheets]').click();
+  const [,fee]=form.querySelectorAll('[name="sheets"]');
+  assert.equal(fee.checked,false);
+  assert.ok(fee.disabled);
+  assert.match(fee.closest('label').textContent,/请先添加并启用/);
+  await dialog.querySelector('[data-check]').onclick();
+  assert.deepEqual(calls[0].options.sources,[{sheet:'工资',category:'司机工资'}]);
 });
 
 test('freight previews all checked sheets and invalidates confirmation when they change', async t => {

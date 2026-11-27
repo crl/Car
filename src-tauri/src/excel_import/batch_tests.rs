@@ -9,6 +9,233 @@ fn options(sheets: &[&str], kind: &str, category: &str) -> ImportOptions {
     .unwrap()
 }
 
+fn payroll_selection(sources: &[(&str, &str)]) -> ImportOptions {
+    serde_json::from_value(json!({"sources": sources.iter().map(|(sheet,category)| json!({ "sheet":sheet,"category":category })).collect::<Vec<_>>(),
+        "date":"2026-10-31","kind":"支出"})).unwrap()
+}
+
+fn payroll_fixture(with_wages: bool, fee: &str) -> Workbook {
+    let mut workbook = Workbook::new();
+    if with_wages {
+        workbook
+            .add_worksheet()
+            .set_name("工资")
+            .unwrap()
+            .write_row(0, 1, ["司机工资", "车牌号"])
+            .unwrap()
+            .write_row(1, 1, ["50", "沪A12345"])
+            .unwrap()
+            .write_row(2, 1, ["30", "沪A12345"])
+            .unwrap();
+    }
+    let sheet = workbook.add_worksheet().set_name("外包").unwrap();
+    sheet
+        .write_string(0, 0, "说明")
+        .unwrap()
+        .write_row(3, 2, ["外包服务费", "车牌号", "司机工资"])
+        .unwrap()
+        .write_row(4, 2, [fee, "沪A12345", "50"])
+        .unwrap()
+        .write_row(5, 2, ["1.005", "沪A12345", "30"])
+        .unwrap()
+        .write_row(6, 2, ["0", "沪B00000", "0"])
+        .unwrap()
+        .write_formula(
+            7,
+            2,
+            rust_xlsxwriter::Formula::new("=ROUND(SUM(C5:C7),2)").set_result("2.01"),
+        )
+        .unwrap()
+        .write_formula(
+            7,
+            4,
+            rust_xlsxwriter::Formula::new("=SUM(E5:E7)").set_result("80"),
+        )
+        .unwrap();
+    workbook
+}
+
+#[test]
+fn payroll_adds_only_service_fees_after_a_salary_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("test.db")).unwrap();
+    let path = dir.path().join("10月_司机工资.xlsx");
+    ledger
+        .save("categories", json!({"kind":"支出","name":"司机工资"}))
+        .unwrap();
+    let mut old = Workbook::new();
+    old.add_worksheet()
+        .set_name("工资")
+        .unwrap()
+        .write_row(0, 0, ["车牌号", "司机工资"])
+        .unwrap()
+        .write_row(1, 0, ["沪A12345", "50"])
+        .unwrap()
+        .write_row(2, 0, ["沪A12345", "30"])
+        .unwrap();
+    old.save(&path).unwrap();
+    let wages = || options(&["工资"], "支出", "司机工资");
+    let first = ledger.import_excel(&path, wages(), None).unwrap();
+    ledger.import_excel(&path, wages(), Some(first)).unwrap();
+    payroll_fixture(true, "1.005").save(&path).unwrap();
+    let info = ledger.excel_import_info(&path).unwrap();
+    assert_eq!(
+        info["sources"],
+        json!([
+            {"sheet":"工资","category":"司机工资","enabled":true},
+            {"sheet":"外包","category":"外包服务费","enabled":false}
+        ])
+    );
+    let both = || payroll_selection(&[("工资", "司机工资"), ("外包", "外包服务费")]);
+    let salary_only = ledger
+        .import_excel(&path, payroll_selection(&[("工资", "司机工资")]), None)
+        .unwrap();
+    assert_eq!(salary_only["duplicates"], 2);
+    assert!(ledger
+        .import_excel(&path, both(), None)
+        .unwrap_err()
+        .contains("外包服务费"));
+    ledger
+        .save("categories", json!({"kind":"支出","name":"外包服务费"}))
+        .unwrap();
+    let preview = ledger.import_excel(&path, both(), None).unwrap();
+    assert_eq!(preview["errors"], json!([]));
+    assert_eq!(preview["duplicates"], 2);
+    assert_eq!(preview["total"], 201);
+    assert_eq!(preview["entries"][0]["note"], "由2笔合并");
+    assert_eq!(preview["entries"][0]["category"], "外包服务费");
+    assert!(ledger
+        .import_excel(&path, payroll_selection(&[("外包", "司机工资")]), None)
+        .is_err());
+    ledger.import_excel(&path, both(), Some(preview)).unwrap();
+    let again = ledger.import_excel(&path, both(), None).unwrap();
+    assert_eq!(again["duplicates"], 4);
+    assert_eq!(again["entries"], json!([]));
+    payroll_fixture(true, "1.006").save(&path).unwrap();
+    assert!(!ledger.import_excel(&path, both(), None).unwrap()["errors"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn payroll_mixed_sheet_uses_two_projects_and_commits_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("test.db")).unwrap();
+    let path = dir.path().join("10月_司机工资.xlsx");
+    for name in ["司机工资", "外包服务费"] {
+        ledger
+            .save("categories", json!({"kind":"支出","name":name}))
+            .unwrap();
+    }
+    payroll_fixture(false, "1.005").save(&path).unwrap();
+    let both = || payroll_selection(&[("外包", "司机工资"), ("外包", "外包服务费")]);
+    assert_eq!(
+        ledger.excel_import_info(&path).unwrap()["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let first = ledger.import_excel(&path, both(), None).unwrap();
+    assert_eq!(first["total"], 8201);
+    payroll_fixture(false, "1.006").save(&path).unwrap();
+    assert!(ledger.import_excel(&path, both(), Some(first)).is_err());
+    assert_eq!(ledger.data().unwrap()["entries"], json!([]));
+    let preview = ledger.import_excel(&path, both(), None).unwrap();
+    ledger.conn.execute_batch("CREATE TRIGGER fail_service BEFORE INSERT ON excel_service_fee_sources BEGIN SELECT RAISE(ABORT,'test'); END;").unwrap();
+    assert!(ledger
+        .import_excel(&path, both(), Some(preview.clone()))
+        .is_err());
+    assert_eq!(ledger.import_excel(&path, both(), None).unwrap(), preview);
+    ledger
+        .conn
+        .execute_batch("DROP TRIGGER fail_service")
+        .unwrap();
+    assert_eq!(
+        ledger.import_excel(&path, both(), Some(preview)).unwrap()["count"],
+        2
+    );
+    assert_eq!(
+        ledger
+            .conn
+            .query_row(
+                "SELECT cents FROM entries WHERE category='外包服务费'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        201
+    );
+    assert_eq!(
+        ledger
+            .conn
+            .query_row(
+                "SELECT cents FROM entries WHERE category='司机工资'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        8000
+    );
+    // A plain salary sheet is added later, with the same wages already paid from the mixed sheet.
+    payroll_fixture(true, "1.006").save(&path).unwrap();
+    let later = ledger
+        .import_excel(
+            &path,
+            payroll_selection(&[("工资", "司机工资"), ("外包", "外包服务费")]),
+            None,
+        )
+        .unwrap();
+    assert_eq!(later["entries"], json!([]));
+    assert_eq!(later["duplicates"], 4);
+}
+
+#[test]
+fn payroll_fee_errors_identify_bad_rows_and_allow_salary_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("test.db")).unwrap();
+    let path = dir.path().join("当月_司机工资.xlsx");
+    for name in ["司机工资", "外包服务费"] {
+        ledger
+            .save("categories", json!({"kind":"支出","name":name}))
+            .unwrap();
+    }
+    let mut book = payroll_fixture(false, "1.005");
+    let sheet = book.add_worksheet().set_name("服务费").unwrap();
+    sheet
+        .set_formula_result_default("")
+        .write_row(2, 2, ["车牌号", "外包服务费"])
+        .unwrap()
+        .write_number(3, 3, 100)
+        .unwrap()
+        .write_row(4, 2, ["沪A", "-25"])
+        .unwrap()
+        .write_string(5, 2, "沪B")
+        .unwrap()
+        .write_formula(5, 3, "=1+2")
+        .unwrap();
+    book.save(&path).unwrap();
+    let bad = || payroll_selection(&[("外包", "司机工资"), ("服务费", "外包服务费")]);
+    let preview = ledger.import_excel(&path, bad(), None).unwrap();
+    let errors = preview["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 3);
+    for (i, error) in errors.iter().enumerate() {
+        assert!(error
+            .as_str()
+            .unwrap()
+            .contains(&format!("「服务费」第 {} 行", 4 + i)));
+    }
+    assert!(ledger.import_excel(&path, bad(), Some(preview)).is_err());
+    assert_eq!(ledger.data().unwrap()["entries"], json!([]));
+    assert_eq!(
+        ledger
+            .import_excel(&path, payroll_selection(&[("外包", "司机工资")]), None)
+            .unwrap()["errors"],
+        json!([])
+    );
+}
+
 fn salary_workbook(wage: &str) -> Workbook {
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet().set_name("工资明细").unwrap();
@@ -657,6 +884,7 @@ fn a_registered_handler_can_inspect_preview_and_commit_its_own_format() {
                 .skip(1)
                 .map(|(index, row)| {
                     Ok(Detail {
+                        merged_rows: Vec::new(),
                         row: first_row + index + 1,
                         excluded: false,
                         start: String::new(),

@@ -190,6 +190,8 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
   }
   if (file.cancelled) return;
   const { kind, default_category: defaultCategory, requires_party: requiresParty = true } = file;
+  const sources = file.sources;
+  const choices = sources || file.sheets.map(sheet => ({sheet, enabled: true}));
 
   const dialog = document.createElement('dialog');
   dialog.className = 'excel-import';
@@ -206,7 +208,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
             <button type="button" class="secondary" data-clear-sheets>全不选</button>
           </div>
           <div class="import-sheet-choices">
-            ${file.sheets.map(sheet => `<label class="project-chip"><input type="checkbox" name="sheets" value="${esc(sheet)}" checked><span>${esc(sheet)}</span></label>`).join('')}
+            ${choices.map(({sheet, category, enabled}, index) => `<label class="project-chip"><input type="checkbox" name="sheets" value="${sources ? index : esc(sheet)}" ${enabled ? 'checked' : 'disabled'}><span>${esc(sheet)}${sources ? ' · ' + esc(category) : ''}${enabled ? '' : '（请先添加并启用该支出项目）'}</span></label>`).join('')}
           </div>
           <p class="help" data-no-sheets hidden>没有匹配的子表</p>
         </fieldset>
@@ -222,7 +224,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
               }).join('')}
             </div>
           </fieldset>
-          <label>收支项目<select name="category" required></select></label>
+          ${sources ? '' : '<label>收支项目<select name="category" required></select></label>'}
         </div>
       </form>
       <div data-preview></div>
@@ -263,8 +265,10 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
   const projects = categories.filter(category => category.active && category.kind === kind);
   const select = form.elements.category;
   const placeholder = projects.length ? '请选择收支项目' : '请先到收支类型添加项目';
-  select.replaceChildren(new Option(placeholder, ''), ...projects.map(category => new Option(category.name, category.name)));
-  select.value = projects.some(category => category.name === defaultCategory) ? defaultCategory : '';
+  if (select) {
+    select.replaceChildren(new Option(placeholder, ''), ...projects.map(category => new Option(category.name, category.name)));
+    select.value = projects.some(category => category.name === defaultCategory) ? defaultCategory : '';
+  }
   let busy = false;
   let preview = null;
 
@@ -279,8 +283,8 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
   }
 
   function selectSheets(checked) {
-    if (!sheetFields.some(field => field.checked !== checked)) return;
-    for (const field of sheetFields) field.checked = checked;
+    if (!sheetFields.some(field => !field.disabled && field.checked !== checked)) return;
+    for (const field of sheetFields) if (!field.disabled) field.checked = checked;
     invalidate();
   }
 
@@ -290,11 +294,18 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
     invalidate();
     if (!form.reportValidity()) return;
     const fields = new FormData(form);
-    const options = {
-      sheets: fields.getAll('sheets'), date: fields.get('date'), party: fields.get('party') || '',
-      kind, category: fields.get('category'),
-    };
-    if (!options.sheets.length) {
+    const selected = fields.getAll('sheets');
+    const options = {date: fields.get('date'), party: fields.get('party') || '', kind};
+    if (sources) {
+      options.sources = selected.map(index => {
+        const {sheet, category} = sources[Number(index)];
+        return {sheet, category};
+      });
+    } else {
+      options.sheets = selected;
+      options.category = fields.get('category');
+    }
+    if (!selected.length) {
       errorNode.textContent = '请至少选择一张子表';
       sheetSearch.focus();
       return;
@@ -318,7 +329,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
         dialog.close();
         try {
           await load();
-          notify(`已导入 ${result.count} 笔${options.category}${result.new_cars ? `，新增 ${result.new_cars} 辆车` : ''}`);
+          notify(`已导入 ${result.count} 笔${options.category || '支出'}${result.new_cars ? `，新增 ${result.new_cars} 辆车` : ''}`);
         } catch {
           notify(`已导入 ${result.count} 笔账目，刷新失败，请重新打开账目页`);
         }
@@ -326,13 +337,22 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
       }
       preview = result;
       const { entries, errors, new_plates, new_addresses } = result;
-      const showSheet = result.sheets.length > 1;
+      const showSheet = !!sources || result.sheets.length > 1;
+      const projectTotals = new Map();
+      if (sources) for (const sheet of result.sheets) {
+        const totals = projectTotals.get(sheet.category) || {details: 0, count: 0, total: 0};
+        totals.details += sheet.details;
+        totals.count += sheet.count;
+        totals.total += sheet.total;
+        projectTotals.set(sheet.category, totals);
+      }
       previewNode.innerHTML = `
         <p>${esc(result.date)} · ${result.party ? esc(result.party) + ' · ' : ''}${esc(result.kind)} / ${esc(result.category)}</p>
         <p>明细 ${result.details} 条 · 明细金额合计 ¥${money(result.source_total)}</p>
         <p>当前可入账 ${entries.length} 笔 · ¥${money(result.total)}
           ${result.duplicates ? ` · 重复跳过 ${result.duplicates} 条（¥${money(result.duplicate_total)}）` : ''}</p>
-        <ul class="import-summaries">${result.sheets.map(sheet => `<li><strong>${esc(sheet.sheet)}</strong>
+        ${[...projectTotals].map(([category, totals]) => `<p><strong>${esc(category)}</strong> · 明细 ${totals.details} 条 · 可入账 ${totals.count} 笔（¥${money(totals.total)}）</p>`).join('')}
+        <ul class="import-summaries">${result.sheets.map(sheet => `<li><strong>${esc(sheet.sheet)}${sources ? ' · ' + esc(sheet.category) : ''}</strong>
           · 明细 ${sheet.details} 条（¥${money(sheet.source_total)}） · 跳过 ${sheet.duplicates} 条 · 可入账 ${sheet.count} 笔（¥${money(sheet.total)}）</li>`).join('')}</ul>
         ${new_addresses.length ? `<p>确认后新增 ${new_addresses.length} 个自定义地址：${new_addresses.map(esc).join('、')}</p>` : ''}
         ${new_plates.length ? `<p>确认后新增 ${new_plates.length} 辆车：${new_plates.map(esc).join('、')}</p>` : ''}
@@ -348,7 +368,10 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
             <th><button type="button" class="project-header-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="importPlateFilter">车牌 ▾</button></th>
             <th>起点 → 终点</th><th>金额</th><th>备注</th>
           </tr></thead><tbody></tbody></table></div>` : ''}`;
-      if (entries.length) installPlateFilter(previewNode, entries, showSheet, esc, money);
+      if (entries.length) {
+        const displayEntries = sources ? entries.map(entry => ({...entry, sheet: `${entry.sheet} · ${entry.category}`})) : entries;
+        installPlateFilter(previewNode, displayEntries, showSheet, esc, money);
+      }
       submit.disabled = !entries.length || !!errors.length;
       if (errors.length) {
         problems.setErrors(errors);

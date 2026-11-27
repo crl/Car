@@ -102,10 +102,19 @@ pub struct ImportOptions {
     sheet: String,
     #[serde(default)]
     sheets: Vec<String>,
+    #[serde(default)]
+    sources: Option<Vec<SheetProject>>,
     date: String,
     #[serde(default)]
     party: String,
     kind: String,
+    #[serde(default)]
+    category: String,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+struct SheetProject {
+    sheet: String,
     category: String,
 }
 
@@ -113,6 +122,8 @@ pub struct ImportOptions {
 struct Detail {
     #[serde(skip)]
     row: usize,
+    #[serde(skip)]
+    merged_rows: Vec<usize>,
     #[serde(skip)]
     excluded: bool,
     start: String,
@@ -140,6 +151,16 @@ struct PreparedSheet {
 }
 
 impl PreparedSheet {
+    fn skip_imported_rows(&mut self) {
+        self.duplicates = self
+            .rows
+            .iter()
+            .map(|row| row.merged_rows.len().max(1))
+            .sum();
+        self.duplicate_total = self.source_total;
+        self.rows.clear();
+    }
+
     fn new(fingerprint: String, details: usize, rows: Vec<Detail>) -> Self {
         Self {
             fingerprint,
@@ -199,14 +220,13 @@ impl ImportRun for WholeSheetRun {
             .map_err(err)?;
         if let Some(previous) = existing {
             if previous == prepared.fingerprint {
-                prepared.duplicates = prepared.rows.len();
-                prepared.duplicate_total = prepared.source_total;
+                prepared.skip_imported_rows();
             } else {
                 errors.push(format!(
                     "子表「{sheet}」已导入，当前内容与已入账版本不同，请先核对账目"
                 ));
+                prepared.rows.clear();
             }
-            prepared.rows.clear();
         }
         Ok(prepared)
     }
@@ -233,6 +253,7 @@ impl ImportRun for WholeSheetRun {
 
 struct SheetImport {
     name: String,
+    category: String,
     fingerprint: String,
     details: usize,
     source_total: i64,
@@ -247,7 +268,7 @@ impl SheetImport {
     }
 
     fn summary(&self) -> Value {
-        json!({"sheet":self.name,"details":self.details,"source_total":self.source_total,
+        json!({"sheet":self.name,"category":self.category,"details":self.details,"source_total":self.source_total,
             "duplicates":self.duplicates,"duplicate_total":self.duplicate_total,
             "count":self.groups.len(),"total":self.total()})
     }
@@ -339,6 +360,7 @@ impl<'a> RawDetail<'a> {
     fn into_detail(self, row: usize) -> Result<Detail> {
         Ok(Detail {
             row,
+            merged_rows: Vec::new(),
             excluded: false,
             start: self.start,
             end: self.end,
@@ -352,7 +374,7 @@ impl Batch {
     fn group_sheet(
         &mut self,
         tx: &Transaction<'_>,
-        name: String,
+        source: SheetProject,
         prepared: PreparedSheet,
     ) -> Result<SheetImport> {
         let PreparedSheet {
@@ -364,7 +386,8 @@ impl Batch {
             rows,
         } = prepared;
         let mut sheet = SheetImport {
-            name,
+            name: source.sheet,
+            category: source.category,
             fingerprint,
             details,
             source_total,
@@ -428,7 +451,11 @@ impl Batch {
                     source_rows: Vec::new(),
                 });
             group.cents += detail.cents;
-            group.source_rows.push(detail.row);
+            if detail.merged_rows.is_empty() {
+                group.source_rows.push(detail.row);
+            } else {
+                group.source_rows.extend_from_slice(&detail.merged_rows);
+            }
         }
         sheet.groups = groups.into_values().collect();
         sheet
@@ -444,6 +471,15 @@ impl Batch {
         }
         Ok(sheet)
     }
+}
+
+fn category_active(conn: &rusqlite::Connection, kind: &str, name: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM categories WHERE kind=? AND name=? AND active=1)",
+        params![kind, name],
+        |row| row.get(0),
+    )
+    .map_err(err)
 }
 
 fn check_filename_category(ledger: &Ledger, name: &str, kind: Option<&str>) -> Result<()> {
@@ -545,6 +581,30 @@ impl ImportRegistry {
     fn inspect(&self, ledger: &Ledger, path: &Path) -> Result<Value> {
         let (_, importer, mut workbook) = self.open(ledger, path)?;
         let headers = importer.handler.headers();
+        if importer.name == driver_salary::SALARY {
+            let choices = driver_salary::discover(&mut workbook)?;
+            let mixed = choices
+                .iter()
+                .any(|source| source.category == driver_salary::FEE);
+            if mixed {
+                let fee_active = category_active(&ledger.conn, "支出", driver_salary::FEE)?;
+                let sources: Vec<_> = choices.iter().map(|s| json!({
+                    "sheet": s.sheet, "category": s.category, "enabled": s.category != driver_salary::FEE || fee_active
+                })).collect();
+                return Ok(
+                    json!({"path":path, "sources":sources, "kind":"支出","default_category":importer.name,"requires_party":false}),
+                );
+            }
+            if choices.is_empty() {
+                return Err(
+                    "此文件没有符合司机工资格式的子表，需要车牌号和司机工资或外包服务费表头".into(),
+                );
+            }
+            return Ok(
+                json!({"path":path,"sheets":choices.iter().map(|s| &s.sheet).collect::<Vec<_>>(),
+                "kind":"支出","default_category":importer.name,"requires_party":false}),
+            );
+        }
         let mut sheets = Vec::new();
         for name in workbook.sheet_names() {
             let range = workbook.worksheet_range(&name).map_err(err)?;
@@ -575,6 +635,7 @@ impl ImportRegistry {
         let ImportOptions {
             sheet,
             mut sheets,
+            sources,
             date,
             party,
             kind,
@@ -588,7 +649,7 @@ impl ImportRegistry {
         if sheets.is_empty() && !sheet.is_empty() {
             sheets.push(sheet);
         }
-        if sheets.is_empty() {
+        if sheets.is_empty() && sources.as_ref().is_none_or(Vec::is_empty) {
             return Err("请至少选择一张子表".into());
         }
         let (file_stem, importer, mut workbook) = self.open(ledger, path)?;
@@ -602,38 +663,84 @@ impl ImportRegistry {
                 importer.handler.kind()
             ));
         }
-        let selected: BTreeSet<_> = sheets.iter().map(String::as_str).collect();
-        let ordered: Vec<_> = workbook
-            .sheet_names()
-            .into_iter()
-            .filter(|sheet| selected.contains(sheet.as_str()))
-            .collect();
-        if ordered.len() != sheets.len() {
-            return Err("所选子表不存在或重复，请重新选择文件".into());
-        }
-
+        let salary_choices = if importer.name == driver_salary::SALARY {
+            driver_salary::discover(&mut workbook)?
+        } else {
+            Vec::new()
+        };
+        let mixed = salary_choices
+            .iter()
+            .any(|s| s.category == driver_salary::FEE);
         let tx = ledger.conn.unchecked_transaction().map_err(err)?;
-        if category.is_empty() {
-            return Err("请选择收支项目".into());
+        let old_salary_fingerprints =
+            driver_salary::prior_mixed_salaries(&tx, file_stem, &salary_choices)?;
+        let ordered: Vec<SheetProject> = if mixed {
+            let selected = sources
+                .filter(|s| !s.is_empty() && sheets.is_empty())
+                .ok_or("工资或服务费来源已变化，请重新选择文件")?;
+            let keys: BTreeSet<_> = selected.iter().collect();
+            let ordered: Vec<_> = salary_choices
+                .into_iter()
+                .filter(|s| keys.contains(s))
+                .collect();
+            if ordered.len() != selected.len() {
+                return Err("所选子表或收支项目已变化或重复，请重新选择文件".into());
+            }
+            ordered
+        } else {
+            if sources.is_some() {
+                return Err("导入来源已变化，请重新选择文件".into());
+            }
+            if category.is_empty() {
+                return Err("请选择收支项目".into());
+            }
+            let selected: BTreeSet<_> = sheets.iter().collect();
+            let ordered: Vec<_> = workbook
+                .sheet_names()
+                .into_iter()
+                .filter(|s| selected.contains(s))
+                .map(|sheet| SheetProject {
+                    sheet,
+                    category: category.clone(),
+                })
+                .collect();
+            if ordered.len() != sheets.len() {
+                return Err("所选子表不存在或重复，请重新选择文件".into());
+            }
+            ordered
+        };
+        let categories: BTreeSet<_> = ordered.iter().map(|s| s.category.as_str()).collect();
+        for name in &categories {
+            if !category_active(&tx, &kind, name)? {
+                return Err(format!(
+                    "所选收支项目已停用或不存在：{name}，请重新打开导入窗口"
+                ));
+            }
         }
-        let active: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM categories WHERE kind=? AND name=? AND active=1)",
-                params![kind, category],
-                |row| row.get(0),
-            )
-            .map_err(err)?;
-        if !active {
-            return Err("所选收支项目已停用或不存在，请重新打开导入窗口".into());
-        }
+        let category = categories.into_iter().collect::<Vec<_>>().join("、");
 
         let mut run = importer.handler.start(file_stem);
+        let mut fee_run = driver_salary::fee_run(file_stem);
         let mut batch = Batch::default();
         let sheets = ordered
             .into_iter()
-            .map(|name| {
-                let prepared = run.read_sheet(&tx, &mut workbook, &name, &mut batch.errors)?;
-                batch.group_sheet(&tx, name, prepared)
+            .map(|source| {
+                let handler: &mut dyn ImportRun = if mixed && source.category == driver_salary::FEE
+                {
+                    &mut fee_run
+                } else {
+                    run.as_mut()
+                };
+                let mut prepared =
+                    handler.read_sheet(&tx, &mut workbook, &source.sheet, &mut batch.errors)?;
+                if mixed
+                    && source.category == driver_salary::SALARY
+                    && !prepared.rows.is_empty()
+                    && old_salary_fingerprints.contains(&prepared.fingerprint)
+                {
+                    prepared.skip_imported_rows();
+                }
+                batch.group_sheet(&tx, source, prepared)
             })
             .collect::<Result<Vec<_>>>()?;
         let groups = sheets.iter().flat_map(|sheet| &sheet.groups);
@@ -653,7 +760,7 @@ impl ImportRegistry {
             .flat_map(|sheet| {
                 sheet.groups.iter().map(|group| {
                     json!({
-                        "sheet": sheet.name, "car": group.car, "plate": group.plate,
+                        "sheet": sheet.name, "category": sheet.category, "car": group.car, "plate": group.plate,
                         "start": group.start, "end": group.end, "cents": group.cents,
                         "sources": group.source_rows.len(), "note": group.merge_note()
                     })
@@ -707,7 +814,7 @@ impl ImportRegistry {
                     "entries",
                     json!({
                         "car_id": car, "date": date, "party": party, "kind": kind,
-                        "category": category,
+                        "category": sheet.category,
                         "note": group.merge_note(),
                         "amount": format!("{}.{:02}", group.cents / 100, group.cents % 100),
                         "start_address_id": address_id(&group.start),
@@ -723,7 +830,12 @@ impl ImportRegistry {
                     )
                     .map_err(err)?;
                 }
-                run.record_sources(&tx, sheet, group, entry_id)?;
+                let handler: &dyn ImportRun = if mixed && sheet.category == driver_salary::FEE {
+                    &fee_run
+                } else {
+                    run.as_ref()
+                };
+                handler.record_sources(&tx, sheet, group, entry_id)?;
             }
         }
         tx.commit().map_err(err)?;
@@ -754,6 +866,7 @@ mod tests {
         ImportOptions {
             sheet: "明细".into(),
             sheets: Vec::new(),
+            sources: None,
             date: "2026-11-24".into(),
             party: "华通".into(),
             kind: "收入".into(),

@@ -33,6 +33,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "x509-
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1", features = ["net", "rt", "sync", "time", "macros"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rust_decimal = { version = "1", default-features = false }
 
 [dev-dependencies]
 zip = { version = "4", default-features = false, features = ["deflate"] }
