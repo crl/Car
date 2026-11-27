@@ -36,7 +36,7 @@ fn write_inner(path: &Path, rows: &[Value]) -> Result<(), XlsxError> {
     let sheet = book.add_worksheet();
     sheet.set_name("收支明细")?;
     sheet.set_freeze_panes(1, 0)?;
-    sheet.autofilter(0, 0, rows.len() as u32, 9)?;
+    sheet.autofilter(0, 0, rows.len() as u32, 10)?;
     let header = Format::new()
         .set_bold()
         .set_font_color(Color::White)
@@ -50,7 +50,7 @@ fn write_inner(path: &Path, rows: &[Value]) -> Result<(), XlsxError> {
         .set_font_color(Color::RGB(0xBF6630))
         .set_background_color(Color::RGB(0xFFF2E9));
     let neutral = Format::new().set_num_format("#,##0.00");
-    for (col, width) in [14, 20, 10, 14, 18, 18, 40, 40, 20, 55]
+    for (col, width) in [14, 20, 10, 14, 18, 18, 40, 40, 20, 55, 18]
         .into_iter()
         .enumerate()
     {
@@ -67,6 +67,7 @@ fn write_inner(path: &Path, rows: &[Value]) -> Result<(), XlsxError> {
         "终点",
         "往来方",
         "备注",
+        "品牌",
     ]
     .into_iter()
     .enumerate()
@@ -100,6 +101,7 @@ fn write_inner(path: &Path, rows: &[Value]) -> Result<(), XlsxError> {
             (7, end.as_str()),
             (8, text(row, "party")),
             (9, text(row, "note")),
+            (10, text(row, "brand")),
         ] {
             // Explicit strings keep formula-looking input and URLs as literal text.
             sheet.write_string(r, col, value)?;
@@ -161,7 +163,7 @@ mod tests {
         write_workbook(
             &path,
             &[
-                json!({"date":"second","kind":"收入","cents":10,"name":"=1+1","note":"@SUM(A1)","start_address":"浙江省 / 杭州市 / 西湖区","start_address_detail":"小区3栋602室"}),
+                json!({"date":"second","kind":"收入","cents":10,"name":"=1+1","note":"@SUM(A1)","brand":"Brand A","start_address":"浙江省 / 杭州市 / 西湖区","start_address_detail":"小区3栋602室"}),
                 json!({"date":"first","kind":"支出","cents":30,"plate":"+plate"}),
                 json!({"kind":"收入","cents":20}),
             ],
@@ -170,10 +172,10 @@ mod tests {
         let xml = part(&path, "xl/worksheets/sheet1.xml");
         let strings = part(&path, "xl/sharedStrings.xml");
         assert!(xml.contains("ySplit=\"1\""));
-        assert!(xml.contains("autoFilter ref=\"A1:J4\""));
+        assert!(xml.contains("autoFilter ref=\"A1:K4\""));
         assert!(!xml.contains("<f"));
         assert!(strings.find("second").unwrap() < strings.find("first").unwrap());
-        for literal in ["=1+1", "@SUM(A1)", "+plate", "无", "浙江省 / 杭州市 / 西湖区 / 小区3栋602室"] {
+        for literal in ["=1+1", "@SUM(A1)", "Brand A", "+plate", "无", "浙江省 / 杭州市 / 西湖区 / 小区3栋602室"] {
             assert!(strings.contains(literal));
         }
         assert!(xml.contains("r=\"E6\" s=\"2\"><v>0.3</v>"));
@@ -190,7 +192,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.xlsx");
         write_workbook(&path, &[]).unwrap();
-        assert!(part(&path, "xl/worksheets/sheet1.xml").contains("autoFilter ref=\"A1:J1\""));
+        assert!(part(&path, "xl/worksheets/sheet1.xml").contains("autoFilter ref=\"A1:K1\""));
         assert!(write_workbook(&path, &[json!({"cents":1.5})]).is_err());
     }
 }

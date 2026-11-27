@@ -75,6 +75,11 @@ export async function alertDialog(message){await confirmDialog(message)}
 let closing=false;
 async function requestExit(){if(closing||pending||updater?.busy||window.frontendBusy?.())return;closing=true;try{if(window.frontendDirty?.()&&!await confirmDialog('还有未保存的内容，确定退出？'))return;await service.call('exit_app')}catch(e){await alertDialog(String(e))}finally{closing=false}}
 let acceptedHash=location.hash||'#/cars',routing=false;
+window.replaceWorkspaceHash=hash=>{
+ acceptedHash=hash;
+ history.replaceState(null,'',hash);
+ updateBrowserAdminLink();
+};
 window.addEventListener('hashchange',async()=>{
  if(routing){history.replaceState(null,'',acceptedHash);return}
  const next=location.hash;

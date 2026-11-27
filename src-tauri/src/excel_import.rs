@@ -130,6 +130,10 @@ struct Detail {
     end: String,
     plate: String,
     cents: i64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    brand: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    party: Option<String>,
 }
 
 // These field names and their order are part of the existing workbook fingerprints.
@@ -148,6 +152,7 @@ struct PreparedSheet {
     duplicates: usize,
     duplicate_total: i64,
     rows: Vec<Detail>,
+    warnings: Vec<String>,
 }
 
 impl PreparedSheet {
@@ -169,6 +174,7 @@ impl PreparedSheet {
             duplicates: 0,
             duplicate_total: 0,
             rows,
+            warnings: Vec::new(),
         }
     }
 }
@@ -181,6 +187,8 @@ struct Group {
     end: String,
     cents: i64,
     source_rows: Vec<usize>,
+    brand: String,
+    party: Option<String>,
 }
 
 impl Group {
@@ -276,6 +284,7 @@ impl SheetImport {
 
 #[derive(Default)]
 struct Batch {
+    warnings: Vec<String>,
     addresses: BTreeMap<String, Option<i64>>,
     errors: Vec<String>,
 }
@@ -362,6 +371,8 @@ impl<'a> RawDetail<'a> {
             row,
             merged_rows: Vec::new(),
             excluded: false,
+            brand: String::new(),
+            party: None,
             start: self.start,
             end: self.end,
             plate: self.plate,
@@ -384,7 +395,9 @@ impl Batch {
             duplicates,
             duplicate_total,
             rows,
+            warnings,
         } = prepared;
+        self.warnings.extend(warnings);
         let mut sheet = SheetImport {
             name: source.sheet,
             category: source.category,
@@ -440,7 +453,7 @@ impl Batch {
             }
 
             let group = groups
-                .entry((&detail.plate, &detail.start, &detail.end))
+                .entry((&detail.plate, &detail.start, &detail.end, &detail.brand, &detail.party))
                 .or_insert_with(|| Group {
                     first_row: detail.row,
                     car,
@@ -449,6 +462,8 @@ impl Batch {
                     end: detail.end.clone(),
                     cents: 0,
                     source_rows: Vec::new(),
+                    brand: detail.brand.clone(),
+                    party: detail.party.clone(),
                 });
             group.cents += detail.cents;
             if detail.merged_rows.is_empty() {
@@ -570,11 +585,16 @@ impl ImportRegistry {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or_default();
-        let importer = self.resolve(ledger, stem)?;
+        let mut importer = self.resolve(ledger, stem)?;
         if path.metadata().map_err(err)?.len() > 20 * 1024 * 1024 {
             return Err("Excel 文件不能超过 20 MB".into());
         }
-        let workbook = open_workbook(path).map_err(|error| format!("无法读取 Excel：{error}"))?;
+        let mut workbook: Workbook = open_workbook(path).map_err(|error| format!("无法读取 Excel：{error}"))?;
+        if importer.name == "运费" && workbook.sheet_names().iter().any(|sheet| {
+            workbook.worksheet_range(sheet).is_ok_and(|range| freight::MODERN.find_header(&range).is_some())
+        }) {
+            importer.handler = &freight::MODERN;
+        }
         Ok((stem, importer, workbook))
     }
 
@@ -722,6 +742,7 @@ impl ImportRegistry {
         let mut run = importer.handler.start(file_stem);
         let mut fee_run = driver_salary::fee_run(file_stem);
         let mut batch = Batch::default();
+        let mut address_names = HashMap::new();
         let sheets = ordered
             .into_iter()
             .map(|source| {
@@ -739,6 +760,28 @@ impl ImportRegistry {
                     && old_salary_fingerprints.contains(&prepared.fingerprint)
                 {
                     prepared.skip_imported_rows();
+                }
+                let mut resolve_address = tx.prepare_cached(
+                    "SELECT name FROM addresses WHERE active=1 AND
+                     (trim(name)=?1 COLLATE NOCASE OR EXISTS(SELECT 1 FROM json_each(aliases)
+                      WHERE trim(value)=?1 COLLATE NOCASE))
+                     ORDER BY (name=?1) DESC, (trim(name)=?1 COLLATE NOCASE) DESC, id LIMIT 1"
+                ).map_err(err)?;
+                for row in &mut prepared.rows {
+                    if row.excluded {
+                        continue;
+                    }
+                    for name in [&mut row.start, &mut row.end] {
+                        if !name.is_empty() {
+                            let key = name.trim().to_ascii_lowercase();
+                            if let std::collections::hash_map::Entry::Vacant(slot) = address_names.entry(key.clone()) {
+                                let canonical = resolve_address.query_row([name.as_str()],
+                                    |row| row.get::<_, String>(0)).optional().map_err(err)?;
+                                slot.insert(canonical.unwrap_or_else(|| name.clone()));
+                            }
+                            name.clone_from(&address_names[&key]);
+                        }
+                    }
                 }
                 batch.group_sheet(&tx, source, prepared)
             })
@@ -762,7 +805,8 @@ impl ImportRegistry {
                     json!({
                         "sheet": sheet.name, "category": sheet.category, "car": group.car, "plate": group.plate,
                         "start": group.start, "end": group.end, "cents": group.cents,
-                        "sources": group.source_rows.len(), "note": group.merge_note()
+                        "sources": group.source_rows.len(), "note": group.merge_note(),
+                        "brand": group.brand, "party": group.party.as_deref().unwrap_or(party)
                     })
                 })
             })
@@ -777,7 +821,7 @@ impl ImportRegistry {
             "date":date,"party":party,"kind":kind,"category":category,
             "details":sheets.iter().map(|sheet| sheet.details).sum::<usize>(),
             "duplicates":sheets.iter().map(|sheet| sheet.duplicates).sum::<usize>(),
-            "errors":batch.errors,"entries":entries,
+            "errors":batch.errors,"warnings":batch.warnings,"entries":entries,
             "total":sheets.iter().map(SheetImport::total).sum::<i64>(),
             "source_total":sheets.iter().map(|sheet| sheet.source_total).sum::<i64>(),
             "duplicate_total":sheets.iter().map(|sheet| sheet.duplicate_total).sum::<i64>(),
@@ -813,7 +857,8 @@ impl ImportRegistry {
                 ledger.save(
                     "entries",
                     json!({
-                        "car_id": car, "date": date, "party": party, "kind": kind,
+                        "car_id": car, "date": date, "party": group.party.as_deref().unwrap_or(party), "kind": kind,
+                        "brand": group.brand,
                         "category": sheet.category,
                         "note": group.merge_note(),
                         "amount": format!("{}.{:02}", group.cents / 100, group.cents % 100),

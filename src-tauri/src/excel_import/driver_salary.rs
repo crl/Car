@@ -133,6 +133,8 @@ fn prepare_sheet(
             row,
             merged_rows: Vec::new(),
             excluded: false,
+            brand: String::new(),
+            party: None,
             start: String::new(),
             end: String::new(),
             plate,
@@ -185,6 +187,8 @@ fn prepare_fees(
             plate,
             cents,
             excluded: false,
+            brand: String::new(),
+            party: None,
             start: String::new(),
             end: String::new(),
         });

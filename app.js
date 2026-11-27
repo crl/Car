@@ -1,3 +1,4 @@
+import { sortFilterOptions, compareFilterLabels } from './filter-option-sort.js';
 import { openExcelImport } from './excel-import.js';
 import { createTextMatcher } from './text-search.js';
 import { service, confirmDialog, alertDialog, refreshAccount, onAccountChange, isDesktop } from './desktop.js';
@@ -58,14 +59,20 @@ let vehicleDriverSelection=null;
 function carDrivers(car){return (data.drivers||[]).filter(driver=>(driver.car_ids||[]).includes(car.id))}
 function carMatches(car,matchText){const drivers=carDrivers(car);const matchesDriver=vehicleDriverSelection===null||(drivers.length?drivers.some(driver=>vehicleDriverSelection.has(String(driver.id))):vehicleDriverSelection.has('unassigned'));const names=drivers.map(driver=>driver.name);return matchesDriver&&matchText([car.plate,car.note,...names].join(' '),names)}
 function options(){return data.cars.map(c=>`<option value="${c.id}">${esc(vehicleLabel(c))}</option>`).join('')}
-function render(){let income=sum(vehicleOverviewEntries(),'收入'),expense=sum(vehicleOverviewEntries(),'支出');$('stats').innerHTML=[['车辆总数',data.cars.length+' 台'],['累计收入','¥ '+money(income)],['累计支出','¥ '+money(expense)],['收支差额','¥ '+money(income-expense)]].map(([k,v])=>`<div class="stat"><span class="muted">${k}</span><strong>${v}</strong></div>`).join('');const matchText=createTextMatcher($('search').value);$('cars').innerHTML=data.cars.filter(c=>(ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(c.id)))&&carMatches(c,matchText)).map(c=>{let rows=vehicleOverviewEntries().filter(e=>e.car_id===c.id),i=sum(rows,'收入'),o=sum(rows,'支出');return `<tr><td><a class="vehicle-link" href="#/cars/${c.id}"><b>${esc(vehicleLabel(c))}</b></a></td><td>${esc(carDrivers(c).map(driver=>driver.name).join('、'))}</td><td>+${money(i)}</td><td>−${money(o)}</td><td>${money(i-o)}</td><td>${isAdmin?`<button onclick="carForm(${c.id})">编辑</button> <button onclick="entryForm(${c.id})">记账</button>`:'只读'}</td></tr>`}).join('')||'<tr><td colspan="6" class="muted">还没有车辆，点击「新增车辆」开始。</td></tr>';let rows=data.entries.filter(e=>(!$('filter').value||e.car_id==$('filter').value)&&(!$('start').value||e.date>=$('start').value)&&(!$('end').value||e.date<=$('end').value)).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);$('subtotal').textContent=`当前筛选 ${rows.length} 笔 · 收入 ¥${money(sum(rows,'收入'))} · 支出 ¥${money(sum(rows,'支出'))}`;$('entries').innerHTML=rows.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(vehicleLabel(data.cars.find(c=>c.id===e.car_id)))}</td><td>${esc(e.kind)}</td><td>${esc(e.category)}</td><td>${money(e.cents)}</td><td>${routeDisplay(e.start_address,e.start_address_detail)} → ${routeDisplay(e.end_address,e.end_address_detail)}</td><td>${esc(e.party)}<br><small>${esc(e.note)}</small></td></tr>`).join('')||'<tr><td colspan="7" class="muted">暂无账目。</td></tr>'}
+function render(){const overviewEntries=vehicleOverviewEntries();let income=sum(overviewEntries,'收入'),expense=sum(overviewEntries,'支出');$('stats').innerHTML=[['车辆总数',data.cars.length+' 台'],['累计收入','¥ '+money(income)],['累计支出','¥ '+money(expense)],['收支差额','¥ '+money(income-expense)]].map(([k,v])=>`<div class="stat"><span class="muted">${k}</span><strong>${v}</strong></div>`).join('');const matchText=createTextMatcher($('search').value);$('cars').innerHTML=data.cars.filter(c=>(ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(c.id)))&&carMatches(c,matchText)).map(c=>{const rows=overviewEntries.filter(e=>e.car_id===c.id);const incomeRows=rows.filter(e=>e.kind==='收入'),expenseRows=rows.filter(e=>e.kind==='支出');const i=sum(incomeRows,'收入'),o=sum(expenseRows,'支出');return `<tr class="${hasVehicleColor(c)?'has-vehicle-marker':''}"><td>${vehicleColorMarker(c)}<a class="vehicle-link" href="#/cars/${c.id}"><b>${esc(vehicleLabel(c))}</b></a></td><td>${esc(carDrivers(c).map(driver=>driver.name).join('、'))}</td><td class="vehicle-entry-count">${incomeRows.length}/${expenseRows.length}</td><td>+${money(i)}</td><td>−${money(o)}</td><td>${money(i-o)}</td><td>${isAdmin?`<button onclick="carForm(${c.id})">编辑</button> <button onclick="entryForm(${c.id})">记账</button>`:'只读'}</td></tr>`}).join('')||'<tr><td colspan="7" class="muted">还没有车辆，点击「新增车辆」开始。</td></tr>';let rows=data.entries.filter(e=>(!$('filter').value||e.car_id==$('filter').value)&&(!$('start').value||e.date>=$('start').value)&&(!$('end').value||e.date<=$('end').value)).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);$('subtotal').textContent=`当前筛选 ${rows.length} 笔 · 收入 ¥${money(sum(rows,'收入'))} · 支出 ¥${money(sum(rows,'支出'))}`;$('entries').innerHTML=rows.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(vehicleLabel(data.cars.find(c=>c.id===e.car_id)))}</td><td>${esc(e.kind)}</td><td>${esc(e.category)}</td><td>${money(e.cents)}</td><td>${routeDisplay(e.start_address,e.start_address_detail)} → ${routeDisplay(e.end_address,e.end_address_detail)}</td><td>${esc(e.party)}<br><small>${esc(e.note)}</small></td></tr>`).join('')||'<tr><td colspan="7" class="muted">暂无账目。</td></tr>'}
 function field(label,name,value='',required=false,type='text'){return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${required?'required':''} ${type==='number'?'min="0.01" step="0.01" max="999999999"':''}></label>`}
+const vehicleColors={red:'红',orange:'橙',yellow:'黄',green:'绿',blue:'蓝',purple:'紫'};
+function vehicleColorField(color){
+ const options=[['','无'],...Object.entries(vehicleColors)];
+ return `<fieldset class="vehicle-color-picker"><legend>颜色</legend><div class="vehicle-color-options">${options.map(([value,label])=>
+  `<label title="${label}"><input type="radio" name="color" aria-label="${label}" value="${value}" ${value===(color||'')?'checked':''}><span class="vehicle-color-swatch" data-color="${value}" aria-hidden="true">${value?'':'无'}</span></label>`).join('')}</div></fieldset>`;
+}
 function carForm(id){
  const car=data.cars.find(car=>car.id===id)||{};
  const selected=new Set(carDrivers(car).map(driver=>driver.id));
  const drivers=(data.drivers||[]).map(driver=>`<label><input type="checkbox" name="driver_ids" value="${driver.id}" ${selected.has(driver.id)?'checked':''}><span>${esc(driver.name)}${driver.phone?' · '+esc(driver.phone):''}</span></label>`).join('')||'<p class="help">暂无司机，请先到司机管理新增。</p>';
  const search=(data.drivers||[]).length?'<input id="carDriverSearch" type="search" aria-label="搜索司机" placeholder="搜索姓名或手机号">':'';
- openForm(id?'编辑车辆':'录入汽车',field('车牌 *','plate',car.plate,true)+'<fieldset class="car-driver-picker" aria-labelledby="carDriverLabel"><div class="car-driver-heading"><span id="carDriverLabel">司机（可多选）</span>'+search+'</div><div class="driver-choices">'+drivers+'</div><p id="carDriverNoResults" class="help" role="status" hidden>没有匹配的司机</p></fieldset>'+field('备注','note',car.note),'/api/cars',id);
+ openForm(id?'编辑车辆':'录入汽车',field('车牌 *','plate',car.plate,true)+'<fieldset class="car-driver-picker" aria-labelledby="carDriverLabel"><div class="car-driver-heading"><span id="carDriverLabel">司机（可多选）</span>'+search+'</div><div class="driver-choices">'+drivers+'</div><p id="carDriverNoResults" class="help" role="status" hidden>没有匹配的司机</p></fieldset>'+'<div class="vehicle-note-color">'+field('备注','note',car.note)+vehicleColorField(car.color)+'</div>','/api/cars',id);
  $('carDriverSearch')?.addEventListener('input',event=>{
   const matchText=createTextMatcher(event.currentTarget.value);
   let hasMatch=false;
@@ -85,8 +92,44 @@ function categoryForm(id,kind='支出'){let c=data.categories.find(c=>c.id===id)
 async function removeCategory(id){if(!await confirmDialog('删除此类型？历史账目会保留。'))return;try{let r=await service.request('/api/categories/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});if(!r.ok)throw Error();await load()}catch{if(!$('accountModal').open)await alertDialog('删除失败，请重试')}}
 function addressLabel(a){return a.name+(a.detail?' / '+a.detail:'')}
 function renderAddresses(){document.querySelector('main').innerHTML=`<p id="message" role="status"></p><section><div class="toolbar"><h2>地址管理</h2><input id="addressSearch" placeholder="搜索名称或详细地址" oninput="renderAddressRows()"><button onclick="addressForm()" ${isAdmin?"":"hidden"}>＋ 新增地址</button></div><p class="muted">地址可用于起点和终点。修改或删除不影响历史账目。</p><table><thead><tr><th>名称</th><th>详细地址</th><th>操作</th></tr></thead><tbody id="addressRows"></tbody></table></section>`;renderAddressRows()}
-function renderAddressRows(){const matchText=createTextMatcher($('addressSearch').value);$('addressRows').innerHTML=data.addresses.filter(a=>a.active&&matchText(addressLabel(a))).map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(a.detail)}</td><td>${isAdmin?`<button onclick="addressForm(${a.id})">修改</button> <button onclick="removeAddress(${a.id})">删除</button>`:'只读'}</td></tr>`).join('')||`<tr><td colspan="3">${isAdmin?'暂无地址，请新增地址。':'暂无地址'}</td></tr>`}
-function addressForm(id){let a=data.addresses.find(a=>a.id===id)||{};openForm(id?'修改地址':'新增地址',field('地址名称 *','name',a.name,true)+field('详细地址','detail',a.detail),'/api/addresses',id)}
+function renderAddressRows(){const matchText=createTextMatcher($('addressSearch').value);$('addressRows').innerHTML=data.addresses.filter(a=>a.active&&matchesAddress(a,matchText)).map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(a.detail)}</td><td>${isAdmin?`<button onclick="addressForm(${a.id})">修改</button> <button onclick="removeAddress(${a.id})">删除</button>`:'只读'}</td></tr>`).join('')||`<tr><td colspan="3">${isAdmin?'暂无地址，请新增地址。':'暂无地址'}</td></tr>`}
+function matchesAddress(address,matchText){
+ return matchText([addressLabel(address),...(address.aliases||[])].join(' '));
+}
+function addressAliasRow(alias=''){
+ return `<div class="address-alias-row"><input name="aliases" aria-label="地址别名" value="${esc(alias)}"><button type="button" class="secondary" data-remove-alias>移除</button></div>`;
+}
+function addressFields(address={}){
+ return field('地址名称 *','name',address.name,true)
+  +`<fieldset class="address-aliases"><legend>别名</legend><div data-alias-rows>${(address.aliases||[]).map(addressAliasRow).join('')}</div><button type="button" class="secondary" data-add-alias>＋ 添加别名</button></fieldset>`
+  +field('详细地址','detail',address.detail);
+}
+function bindAddressAliases(){
+ const panel=$('fields').querySelector('.address-aliases');
+ if(!panel)return;
+ panel.addEventListener('click',event=>{
+  if(event.target.matches('[data-add-alias]')){
+   const rows=panel.querySelector('[data-alias-rows]');
+   rows.insertAdjacentHTML('beforeend',addressAliasRow());
+   rows.lastElementChild.querySelector('input').focus();
+  }else if(event.target.matches('[data-remove-alias]')){
+   event.target.closest('.address-alias-row').remove();
+   panel.querySelector('[data-add-alias]').focus();
+  }
+ });
+}
+function markAddressAliasConflict(message){
+ const match=/^别名「(.*?)」与地址/u.exec(message);
+ if(!match)return false;
+ const input=[...$('fields').querySelectorAll('[name="aliases"]')]
+  .find(field=>field.value.trim()===match[1]);
+ if(!input)return false;
+ input.setAttribute('aria-invalid','true');
+ input.setAttribute('aria-describedby','error');
+ input.focus();
+ return true;
+}
+function addressForm(id){let a=data.addresses.find(a=>a.id===id)||{};openForm(id?'修改地址':'新增地址',addressFields(a),'/api/addresses',id)}
 async function removeAddress(id){if(!await confirmDialog('删除此地址？历史账目保留原地址。'))return;try{let r=await service.request('/api/addresses/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});let result=await r.json();if(!r.ok)throw Error(result.error);await load()}catch(e){$('message').textContent=e.message||'删除失败，请重试'}}
 
 function renderDrivers(){
@@ -117,18 +160,20 @@ let deletionContext=null;
 let initialForm='',subview=null,toastTimer,returnFocus=null;
 const workspaceTemplate=document.querySelector('.workspace').innerHTML;
 let page,detailId,vehicleReturn;
+let workspaceHash,routeAddressId=null;
+const workspacePage=hash=>hash.slice(1).split("?")[0]||"/cars";
 const vehicleSources={'/':'车辆管理','/cars':'车辆管理','/entries':'收支账目','/drivers':'司机管理'};
 function captureVehicleSource(){
- const inputs=['search','start','end','filter','driverSearch'].map(id=>[id,$(id)?.value]);
+ const inputs=['search','start','end','filter','driverSearch','ledgerSearch'].map(id=>[id,$(id)?.value]);
  const scrollTop=document.scrollingElement?.scrollTop??0;
  const filters=[vehicleProjectSelection,vehicleKindSelection,ledgerVehicleSelection,vehicleDriverSelection];
  const routes={...vehicleRouteSelection};
- const sort=[vehicleDateAscending,vehicleSortColumn,vehicleAmountAscending,overviewAmountSort,overviewAmountAscending];
+ const sort=[vehicleDateAscending,vehicleSortColumn,vehicleAmountAscending,overviewAmountSort,overviewAmountAscending,filterTableSort];
  const pagination=[vehiclePage,vehiclePageSize];
- return {page,restore(){
+ return {page,hash:workspaceHash,restore(){
   [vehicleProjectSelection,vehicleKindSelection,ledgerVehicleSelection,vehicleDriverSelection]=filters;
   Object.assign(vehicleRouteSelection,routes);
-  [vehicleDateAscending,vehicleSortColumn,vehicleAmountAscending,overviewAmountSort,overviewAmountAscending]=sort;
+  [vehicleDateAscending,vehicleSortColumn,vehicleAmountAscending,overviewAmountSort,overviewAmountAscending,filterTableSort]=sort;
   for(const [id,value] of inputs)if(value!==undefined&&$(id))$(id).value=value;
   if(page==='/entries'){
    [vehiclePage,vehiclePageSize]=pagination;
@@ -143,7 +188,10 @@ function captureVehicleSource(){
  }};
 }
 function mountRoute(hash){
- page=hash.slice(1)||'/cars';
+ workspaceHash=hash||'#/cars';
+ page=workspacePage(workspaceHash);
+ const id=new URLSearchParams(workspaceHash.split('?')[1]).get('address');
+ routeAddressId=page==='/entries'&&id!==null?id:null;
  const detailMatch=page.match(/^\/cars\/(\d+)$/);
  detailId=detailMatch?Number(detailMatch[1]):null;
  document.querySelectorAll('aside nav a').forEach(link=>{
@@ -159,9 +207,11 @@ function mountRoute(hash){
  if(page==='/'||page==='/cars'){installLedgerVehicleFilter();installVehicleDriverFilter()}
 }
 function navigateWorkspace(hash){
- const next=hash.slice(1)||'/cars';
+ filterTableSort=null;
+ ledgerBatchMode=false;
+ const next=workspacePage(hash);
  const enteringDetail=/^\/cars\/\d+$/.test(next);
- const source=!enteringDetail&&vehicleReturn?.page===next?vehicleReturn:null;
+ const source=!enteringDetail&&vehicleReturn?.hash===(hash||'#/cars')?vehicleReturn:null;
  if(enteringDetail&&detailId===null)vehicleReturn=Object.hasOwn(vehicleSources,page)?captureVehicleSource():null;
  else if(!enteringDetail)vehicleReturn=null;
  if($('modal').open)$('modal').close();
@@ -187,11 +237,11 @@ function navigateWorkspace(hash){
 }
 function notify(message){const toast=$('toast');clearTimeout(toastTimer);toast.textContent=message;if(toast.matches(':popover-open'))toast.hidePopover();toast.showPopover();toastTimer=setTimeout(()=>{toast.hidePopover();toast.textContent=''},3500)}
 function formState(){return JSON.stringify([...new FormData($('form')).entries()])}
-async function requestClose(){if($('save').disabled)return;if(formState()!==initialForm&&!await confirmDialog('还有未保存的内容，确定放弃修改？'))return;if(subview){restoreEntry();return}$('modal').close();returnFocus?.focus()}
+async function requestClose(){if($('save').disabled){const refresh=$('refreshAddressMerge');if(!refresh||refresh.disabled)return;}if(formState()!==initialForm&&!await confirmDialog('还有未保存的内容，确定放弃修改？'))return;if(subview){restoreEntry();return}$('modal').close();returnFocus?.focus()}
 $('modal').addEventListener('cancel',e=>{e.preventDefault();requestClose()});
-$('modal').addEventListener('close',()=>{if($('ledgerCalendar')?.closest('dialog')===$('modal'))$('ledgerCalendar').hidePopover()});
-function refreshTables(){document.querySelectorAll('table').forEach(t=>{let headers=[...t.querySelectorAll('th')].map(x=>x.textContent);t.querySelectorAll('tbody tr').forEach(row=>[...row.cells].forEach((cell,i)=>{if(cell.colSpan===1)cell.dataset.label=headers[i]||''}));});document.querySelectorAll('td button').forEach(b=>{if(['编辑','记账','修改'].includes(b.textContent.trim()))b.classList.add('row-action');if(['删除','移除常用'].includes(b.textContent.trim()))b.classList.add('danger')});document.querySelectorAll('#entries tr').forEach(tr=>{let cells=tr.cells;if(cells.length<5)return;let income=cells[2].textContent==='收入';cells[2].innerHTML=`<span class="badge ${income?'income':'expense'}">${income?'收入':'支出'}</span>`;cells[4].classList.add('amount',income?'income':'expense');cells[4].textContent=(income?'+':'−')+cells[4].textContent});document.querySelectorAll('#cars tr').forEach(tr=>{if(tr.cells.length<6)return;[2,3,4].forEach(i=>tr.cells[i].classList.add('amount'));tr.cells[2].classList.add('income');tr.cells[3].classList.add('expense')})}
-const originalRender=render;render=function(){originalRender();if(!$('cars').querySelector('.vehicle-link')&&$('search').value)$('cars').innerHTML='<tr><td colspan="6" class="empty">没有匹配的车辆，请调整搜索关键词。</td></tr>';if(!data.entries.length)$('entries').innerHTML='<tr><td colspan="7" class="empty">暂无账目，点击「记一笔账」开始记录。</td></tr>';else if(!$('entries').querySelector('td:nth-child(2)'))$('entries').innerHTML='<tr><td colspan="7" class="empty">没有符合筛选条件的账目，请调整条件或清空筛选。</td></tr>';refreshTables()};
+$('modal').addEventListener('close',()=>{if($('refreshAddressMerge'))$('save').disabled=false;if($('ledgerCalendar')?.closest('dialog')===$('modal'))$('ledgerCalendar').hidePopover()});
+function refreshTables(){document.querySelectorAll('table').forEach(t=>{let headers=[...t.querySelectorAll('th')].map(x=>x.textContent);t.querySelectorAll('tbody tr').forEach(row=>[...row.cells].forEach((cell,i)=>{if(cell.colSpan===1)cell.dataset.label=headers[i]||''}));});document.querySelectorAll('td button').forEach(b=>{if(['编辑','记账','修改'].includes(b.textContent.trim()))b.classList.add('row-action');if(['删除','移除常用'].includes(b.textContent.trim()))b.classList.add('danger')});document.querySelectorAll('#entries tr').forEach(tr=>{let cells=tr.cells;if(cells.length<5)return;let income=cells[2].textContent==='收入';cells[2].innerHTML=`<span class="badge ${income?'income':'expense'}">${income?'收入':'支出'}</span>`;cells[4].classList.add('amount',income?'income':'expense');cells[4].textContent=(income?'+':'−')+cells[4].textContent});document.querySelectorAll('#cars tr').forEach(tr=>{if(tr.cells.length<7)return;[3,4,5].forEach(i=>tr.cells[i].classList.add('amount'));tr.cells[3].classList.add('income');tr.cells[4].classList.add('expense')})}
+const originalRender=render;render=function(){originalRender();if(!$('cars').querySelector('.vehicle-link')&&$('search').value)$('cars').innerHTML='<tr><td colspan="7" class="empty">没有匹配的车辆，请调整搜索关键词。</td></tr>';if(!data.entries.length)$('entries').innerHTML='<tr><td colspan="7" class="empty">暂无账目，点击「记一笔账」开始记录。</td></tr>';else if(!$('entries').querySelector('td:nth-child(2)'))$('entries').innerHTML='<tr><td colspan="7" class="empty">没有符合筛选条件的账目，请调整条件或清空筛选。</td></tr>';refreshTables()};
 renderCategories=function(){document.querySelector('main').innerHTML='<p id="message" role="status"></p><p class="help">收入与支出类型分别维护。修改或删除不影响历史账目。</p><div class="category-lists">'+['收入','支出'].map((kind,i)=>`<section id="category-group-${i}"><div class="toolbar"><h2 class="${i?'expense':'income'}">${kind}类型</h2>${isAdmin?`<button onclick="categoryForm(null,'${kind}')">＋ 新增${kind}类型</button>`:''}<input aria-label="搜索${kind}类型" placeholder="搜索${kind}类型" oninput="filterCategories(this.value,${i})"></div><table><thead><tr><th>类型名称</th><th>路线要求</th><th>操作</th></tr></thead><tbody>${data.categories.filter(c=>c.active&&c.kind===kind).map(c=>`<tr><td>${esc(c.name)}</td><td>${c.requires_route?'必填':'选填'}</td><td>${isAdmin?`<button onclick="categoryForm(${c.id})">修改</button> <button onclick="removeCategory(${c.id})">删除</button>`:'只读'}</td></tr>`).join('')}</tbody></table><p class="category-empty help" ${data.categories.some(c=>c.active&&c.kind===kind)?'hidden':''}>暂无${kind}类型，可点击上方新增。</p></section>`).join('')+'</div>';refreshTables()};
 function filterCategories(q,group){const section=$('category-group-'+group),matchText=createTextMatcher(q);let shown=0;section.querySelectorAll('tbody tr').forEach(r=>{r.hidden=!matchText(r.cells[0].textContent);if(!r.hidden)shown++});const empty=section.querySelector('.category-empty');empty.hidden=shown>0;empty.textContent=q?'没有匹配的类型，请调整搜索关键词。':'暂无类型，可点击上方新增。'}
 
@@ -202,19 +252,49 @@ let vehicleKindSelection=null;
 const vehicleRouteSelection={start:null,end:null,party:null};
 let ledgerVehicleSelection=null;
 const projectKey=e=>JSON.stringify([e.kind,e.category]);
-function clearFilters(){if(detailId!==null||page==='/entries'){if($('filter'))$('filter').value='';ledgerVehicleSelection=null;renderLedgerVehicleFilter();vehicleProjectSelection=null;vehicleKindSelection=null;vehicleRouteSelection.start=null;vehicleRouteSelection.end=null;vehicleRouteSelection.party=null;renderRouteFilters('party');renderRouteFilters('start');renderRouteFilters('end');renderKindFilters();renderProjectFilters();$('start').value='';$('end').value='';renderVehicleEntries();return}vehicleDriverSelection=null;ledgerVehicleSelection=null;renderLedgerVehicleFilter();$('filter').value='';$('start').value='';$('end').value='';render()}
+function clearLedgerAddressFilter(){
+ if(routeAddressId===null)return;
+ routeAddressId=null;
+ $('ledgerAddressFilter')?.remove();
+ workspaceHash='#/entries';
+ if(window.replaceWorkspaceHash)window.replaceWorkspaceHash(workspaceHash);
+ else history.replaceState(null,'',workspaceHash);
+}
+function ledgerAddressMatcher(){
+ if(page!=='/entries'||routeAddressId===null)return ()=>true;
+ const address=data.addresses.find(row=>String(row.id)===routeAddressId&&row.active&&!row.region_code);
+ let banner=$('ledgerAddressFilter');
+ if(!banner){
+  $('subtotal').insertAdjacentHTML('beforebegin','<div id="ledgerAddressFilter" class="ledger-address-filter"><span role="status"></span><button type="button" class="text-button">移除地址筛选</button></div>');
+  banner=$('ledgerAddressFilter');
+  banner.querySelector('button').onclick=()=>{
+   clearLedgerAddressFilter();
+   renderVehicleEntries();
+   $('ledgerSearch').focus();
+  };
+ }
+ banner.querySelector('span').textContent=address?'起点或终点：'+address.name:'该自定义地址不存在或已停用';
+ if(!address)return ()=>false;
+ const normalize=value=>String(value??'').trim().replace(/[A-Z]/g,letter=>letter.toLowerCase());
+ const names=new Set([address.name,addressLabel(address),...(address.aliases||[])].map(normalize));
+ return entry=>['start','end'].some(side=>{
+  const id=entry[side+'_address_id'];
+  return id==null?names.has(normalize(entry[side+'_address'])):String(id)===routeAddressId;
+ });
+}
+function clearFilters(){if(detailId!==null||page==='/entries'){clearLedgerAddressFilter();if($('ledgerSearch'))$('ledgerSearch').value='';if($('filter'))$('filter').value='';ledgerVehicleSelection=null;renderLedgerVehicleFilter();vehicleProjectSelection=null;vehicleKindSelection=null;vehicleRouteSelection.start=null;vehicleRouteSelection.end=null;vehicleRouteSelection.party=null;renderRouteFilters('party');renderRouteFilters('start');renderRouteFilters('end');renderKindFilters();renderProjectFilters();$('start').value='';$('end').value='';renderVehicleEntries();return}vehicleDriverSelection=null;ledgerVehicleSelection=null;renderLedgerVehicleFilter();$('filter').value='';$('start').value='';$('end').value='';render()}
 function renderLoadedRoute(){arrangeWorkspace();if(page==='/drivers'){renderDrivers();return}if(page==='/entries'){renderAllLedger();return}if(detailId!==null){renderVehicleDetail();return}if(page==='/addresses'){renderAddresses();return}if(page==='/categories'){renderCategories();return}let prev=$('filter').value;$('filter').innerHTML='<option value="">全部车辆</option>'+options();$('filter').value=prev;render()}
 async function load(){try{let r=await service.request('/api/data');if(!r.ok)throw Error('读取失败');data=await r.json();renderLoadedRoute()}catch{let m=$('message');if(!m){document.querySelector('main').insertAdjacentHTML('afterbegin','<p id="message" role="alert"></p>');m=$('message')}m.innerHTML='读取失败，请检查服务。 <button class="secondary" onclick="load()">重试</button>'}}
 function showFieldError(name,message){let input=$('form').elements[name];if(!input)return false;input.setAttribute('aria-invalid','true');let label=input.closest('label')||input.parentElement;let error=document.createElement('p');error.className='field-error';error.id='error-'+name;error.textContent=message;label.append(error);input.setAttribute('aria-describedby',error.id);return true}
 function clearErrors(){$('form').querySelectorAll('.field-error').forEach(e=>e.remove());$('form').querySelectorAll('[aria-invalid]').forEach(e=>{e.removeAttribute('aria-invalid');e.removeAttribute('aria-describedby')});$('error').textContent=''}
-function openForm(title,html,path,id){$('ledgerCalendar')?.hidePopover();deletionContext=null;$('deleteRecord').hidden=true;returnFocus=document.activeElement;$('title').textContent=title;$('fields').innerHTML=html;bindEntryCalendar();clearErrors();if(!$('modal').open)$('modal').showModal();initialForm=formState();$('fields').querySelector('input:not([type=hidden]),select,textarea')?.focus();$('save').textContent='保存';$('form').onsubmit=async e=>{e.preventDefault();if($('save').disabled)return;clearErrors();let f=$('form');let invalid=[...f.elements].find(x=>(x.name==='date'&&x.required&&!x.value)||(x.willValidate&&!x.checkValidity()));if(invalid){showFieldError(invalid.name,!invalid.value?'请填写此项':invalid.validationMessage);invalid.focus();return}let d=Object.fromEntries(new FormData(f));if(id)d.id=id;if(path==='/api/cars')d.driver_ids=new FormData(f).getAll('driver_ids').map(Number);if(path==='/api/categories')d.requires_route=f.elements.requires_route.checked;
+function openForm(title,html,path,id){$('ledgerCalendar')?.hidePopover();deletionContext=null;$('deleteRecord').hidden=true;returnFocus=document.activeElement;$('title').textContent=title;$('fields').innerHTML=html;bindEntryCalendar();bindAddressAliases();clearErrors();if(!$('modal').open)$('modal').showModal();initialForm=formState();$('fields').querySelector('input:not([type=hidden]),select,textarea')?.focus();$('save').textContent='保存';$('form').onsubmit=async e=>{e.preventDefault();if($('save').disabled)return;clearErrors();let f=$('form');let invalid=[...f.elements].find(x=>(x.name==='date'&&x.required&&!x.value)||(x.willValidate&&!x.checkValidity()));if(invalid){showFieldError(invalid.name,!invalid.value?'请填写此项':invalid.validationMessage);invalid.focus();return}let d=Object.fromEntries(new FormData(f));if(id)d.id=id;if(path==='/api/addresses'&&f.querySelector('.address-aliases'))d.aliases=new FormData(f).getAll('aliases');if(path==='/api/cars')d.driver_ids=new FormData(f).getAll('driver_ids').map(Number);if(path==='/api/categories')d.requires_route=f.elements.requires_route.checked;
 if(path==='/api/entries'){
  const edit=f.elements.id?data.entries.find(e=>e.id===Number(f.elements.id.value)):null;
  if(f.elements.party.disabled) d.party=edit?.kind===d.kind&&edit.category===d.category?edit.party||'':'';
  for(let side of ['start','end']){let input=f.elements[side+'_address'];let a=data.addresses.find(a=>(a.active||(edit&&edit[side+'_address_id']===a.id))&&addressLabel(a)===input.value);if(input.value&&!a){showFieldError(input.name,'请从候选列表选择有效地址');input.focus();return}if(f.elements[side+'_address_detail'].value.trim()&&!a){showFieldError(input.name,'填写详细地址前请选择地区');input.focus();return}d[side+'_address_id']=a?.id||null}if(Boolean(d.start_address_id)!==Boolean(d.end_address_id)){let name=d.start_address_id?'end_address':'start_address';showFieldError(name,'请补齐起点和终点');f.elements[name].focus();return}}
-$('save').disabled=true;$('save').textContent='保存中…';try{let r=await service.request(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});let result=await r.json();if(!r.ok)throw Error(result.error||'保存失败');if(subview){let res=await service.request('/api/data');if(!res.ok)throw Error('地址已保存，列表刷新失败，请重试刷新');data=await res.json();let a=data.addresses.find(a=>a.active&&a.name===d.name.trim());let side=subview.side;restoreEntry();if(a){$('form').elements[side+'_address'].value=addressLabel(a)}notify('地址已新增，可继续记账');return}$('modal').close();await load();notify('保存成功');returnFocus?.focus()}catch(error){let message=error instanceof TypeError?'网络连接失败，请检查服务后重试':error.message||'保存失败，请重试';$('error').textContent=message;let name=path==='/api/drivers'&&message.includes('姓名')?'name':message.includes('车牌')?'plate':message.includes('名称')?'name':message.includes('金额')?'amount':message.includes('地址')||message.includes('起点')?'start_address':message.includes('类型')?'category':null;if(name&&showFieldError(name,message))f.elements[name]?.focus();else $('error').setAttribute('tabindex','-1'),$('error').focus()}finally{$('save').disabled=false;$('save').textContent='保存'}}}
+$('save').disabled=true;$('save').textContent='保存中…';try{let r=await service.request(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});let result=await r.json();if(!r.ok)throw Error(result.error||'保存失败');if(subview){let res=await service.request('/api/data');if(!res.ok)throw Error('地址已保存，列表刷新失败，请重试刷新');data=await res.json();let a=data.addresses.find(a=>a.active&&a.name===d.name.trim());let side=subview.side;restoreEntry();if(a){$('form').elements[side+'_address'].value=addressLabel(a)}notify('地址已新增，可继续记账');return}$('modal').close();await load();notify('保存成功');returnFocus?.focus()}catch(error){let message=error instanceof TypeError?'网络连接失败，请检查服务后重试':error.message||(typeof error==='string'?error:'保存失败，请重试');$('error').textContent=message;if(path==='/api/addresses'&&markAddressAliasConflict(message))return;let name=path==='/api/drivers'&&message.includes('姓名')?'name':message.includes('车牌')?'plate':message.includes('名称')?'name':message.includes('金额')?'amount':message.includes('地址')||message.includes('起点')?'start_address':message.includes('类型')?'category':null;if(name&&showFieldError(name,message))f.elements[name]?.focus();else $('error').setAttribute('tabindex','-1'),$('error').focus()}finally{$('save').disabled=false;$('save').textContent='保存'}}}
 function sectionFields(title,html){if(title==='运输路线')return `<fieldset><div class="route-section-heading"><span>运输路线</span><p id="routeHint" class="help"></p><button class="text-button" type="button" onclick="refreshAddresses()">刷新地址列表</button></div><div class="form-grid">${html}</div></fieldset>`;return `<fieldset><legend>${title}</legend><div class="form-grid">${html}</div></fieldset>`}
-function entryForm(id){if(detailId!==null)id=detailId;if(!data.cars.length){carForm();notify('先新增一台车辆，即可开始记账');return}subview=null;let now=new Date(),today=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');openForm('记一笔账',sectionFields('基本信息',`<label>车辆 *<select name="car_id" required>${options()}</select></label>`+field('记账日期 *','date',today,true,'date'))+sectionFields('金额与类型','<div><label>收支方向</label><input type="hidden" name="kind" value="支出"><div class="segmented" role="group" aria-label="收支方向"><button type="button" data-kind="支出" onclick="setKind(\'支出\')">支出</button><button type="button" data-kind="收入" onclick="setKind(\'收入\')">收入</button></div></div><label>收支项目 *<select name="category" onchange="syncRoute()" required></select></label><label class="span-all">金额 *<div class="money-input"><input name="amount" type="number" required min="0.01" max="999999999" step="0.01" inputmode="decimal" placeholder="0.00"><span>元</span></div></label>')+sectionFields('运输路线',routeFields())+sectionFields('补充信息',field('往来方','party')+field('备注','note')),'/api/entries');if(id)$('form').elements.car_id.value=id;setKind('支出');initialForm=formState()}
+function entryForm(id){if(detailId!==null)id=detailId;if(!data.cars.length){carForm();notify('先新增一台车辆，即可开始记账');return}subview=null;let now=new Date(),today=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');openForm('记一笔账',sectionFields('基本信息',`<label>车辆 *<select name="car_id" required>${options()}</select></label>`+field('记账日期 *','date',today,true,'date'))+sectionFields('金额与类型','<div><label>收支方向</label><input type="hidden" name="kind" value="支出"><div class="segmented" role="group" aria-label="收支方向"><button type="button" data-kind="支出" onclick="setKind(\'支出\')">支出</button><button type="button" data-kind="收入" onclick="setKind(\'收入\')">收入</button></div></div><label>收支项目 *<select name="category" onchange="syncRoute()" required></select></label><label class="span-all">金额 *<div class="money-input"><input name="amount" type="number" required min="0.01" max="999999999" step="0.01" inputmode="decimal" placeholder="0.00"><span>元</span></div></label>')+sectionFields('运输路线',routeFields())+sectionFields('补充信息',field('往来方','party')+field('品牌','brand')+field('备注','note')),'/api/entries');if(id)$('form').elements.car_id.value=id;setKind('支出');initialForm=formState()}
 function setKind(kind){$('form').elements.kind.value=kind;document.querySelectorAll('[data-kind]').forEach(b=>{let selected=b.dataset.kind===kind;b.classList.toggle('selected',selected);b.setAttribute('aria-pressed',selected)});syncCategories()}
 function routeFields(){return '<div class="route-pair span-all">'+['start','end'].map((side,i)=>`<div class="address-picker"><div class="route-endpoint-heading"><label for="${side}-address">${i?'终点':'起点'}</label><button class="text-button" type="button" onclick="openRegion('${side}')">选择省 / 市 / 区县 / 乡镇</button></div><div class="route-search"><input id="${side}-address" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${side}-list" name="${side}_address" placeholder="搜索地区名称或拼音" autocomplete="off" oninput="suggest('${side}')" onfocus="suggest('${side}')" onkeydown="addressKey(event,'${side}')" onblur="hideSuggestions('${side}')"><div class="suggestions" id="${side}-list" role="listbox" hidden></div></div><label class="route-detail-label">详细地址（选填）<input name="${side}_address_detail" placeholder="如某某小区3栋2单元602室"></label></div>${i===0?'<button type="button" class="route-swap-icon" onclick="swapRoute()" title="交换起终点" aria-label="交换起终点"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4"/></svg></button>':''}`).join('')+'</div>'}
 function syncRoute(){
@@ -228,7 +308,7 @@ function suggest(side){
  const state=routeSearch[side];clearTimeout(state.timer);const token=++state.token;
  const input=$('form').elements[side+'_address'],box=$(side+'-list'),q=input.value.trim().toLowerCase();
  const matchText=createTextMatcher(q);
- const matches=data.addresses.filter(a=>a.active&&matchText(addressLabel(a)));
+ const matches=data.addresses.filter(a=>a.active&&matchesAddress(a,matchText));
  const render=(regions=[],message='')=>{
   box.innerHTML=matches.map(a=>`<button type="button" role="option" id="${side}-option-${a.id}" aria-selected="false" data-id="${a.id}" onmousedown="event.preventDefault()" onclick="chooseAddress('${side}',${a.id})">${esc(a.name)}<small>${esc(a.detail)||'常用地区'}</small></button>`).join('');
   const codes=new Set(matches.map(a=>a.region_code).filter(Boolean));
@@ -270,14 +350,14 @@ function hideSuggestions(side){clearTimeout(routeSearch[side].timer);routeSearch
 function addressKey(e,side){let input=e.target,box=$(side+'-list');if(e.key==='Escape'&&!box.hidden){e.preventDefault();e.stopPropagation();hideSuggestions(side);return}if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();if(box.hidden)suggest(side);let opts=[...box.querySelectorAll('[role=option]')];if(!opts.length)return;let i=opts.findIndex(o=>o.getAttribute('aria-selected')==='true');i=e.key==='ArrowDown'?(i+1)%opts.length:(i<=0?opts.length-1:i-1);opts.forEach((o,j)=>o.setAttribute('aria-selected',String(i===j)));input.setAttribute('aria-activedescendant',opts[i].id);opts[i].scrollIntoView({block:'nearest'})}if(e.key==='Enter'&&!box.hidden){let selected=box.querySelector('[aria-selected=true]');if(selected){e.preventDefault();selected.click()}}}
 function swapRoute(){let f=$('form').elements;for(const suffix of ['_address','_address_detail']){[f['start'+suffix].value,f['end'+suffix].value]=[f['end'+suffix].value,f['start'+suffix].value];}hideSuggestions('start');hideSuggestions('end')}
 async function refreshAddresses(){try{let r=await service.request('/api/data');if(!r.ok)throw Error();data.addresses=(await r.json()).addresses;syncRoute();notify('地址列表已更新')}catch{$('error').textContent='地址刷新失败，请检查连接后重试'}}
-function inlineAddress(side){let f=$('form');subview={side,html:$('fields').innerHTML,values:[...new FormData(f)].map(([k,v])=>[k,v]),submit:f.onsubmit,initial:initialForm,title:$('title').textContent};openForm('新增地址 · 返回后继续记账',field('地址名称 *','name','',true)+field('详细地址','detail'),'/api/addresses')}
+function inlineAddress(side){let f=$('form');subview={side,html:$('fields').innerHTML,values:[...new FormData(f)].map(([k,v])=>[k,v]),submit:f.onsubmit,initial:initialForm,title:$('title').textContent};openForm('新增地址 · 返回后继续记账',addressFields(),'/api/addresses')}
 function restoreEntry(){let saved=subview;subview=null;$('fields').innerHTML=saved.html;bindEntryCalendar();for(let [k,v] of saved.values){if($('form').elements[k])$('form').elements[k].value=v}$('title').textContent=saved.title;$('form').onsubmit=saved.submit;initialForm=saved.initial;clearErrors();document.querySelectorAll('.suggestions').forEach(e=>e.hidden=true);document.querySelectorAll('[role=combobox]').forEach(e=>e.setAttribute('aria-expanded','false'));syncRoute()}
 
 function renderVehicleDetail(){
  const car=data.cars.find(c=>c.id===detailId);
  $('pageTitle').textContent=car?vehicleLabel(car):'车辆不存在';
  const source=vehicleReturn?.page||'/cars';
- const sourceLink=`<a href="#${source}">${vehicleSources[source]}</a>`;
+ const sourceLink=`<a href="${esc(vehicleReturn?.hash||'#'+source)}">${vehicleSources[source]}</a>`;
  let breadcrumb=document.querySelector('.vehicle-breadcrumb');
  if(!breadcrumb){
   $('pageTitle').insertAdjacentHTML('beforebegin','<nav class="vehicle-breadcrumb" aria-label="面包屑"></nav>');
@@ -288,7 +368,7 @@ function renderVehicleDetail(){
  if(!car){document.querySelector('main').innerHTML='<section class="empty"><h2>车辆不存在</h2><p>这台车辆不存在，请返回车辆列表选择。</p><a href="#/cars">返回车辆列表</a></section>';return}
  let all=ledgerScope(),income=sum(all,'收入'),expense=sum(all,'支出');
  const from=$('start')?.value||'',to=$('end')?.value||'';
- const profile=`<section class="vehicle-profile">
+ const profile=`<section class="vehicle-profile">${vehicleColorMarker(car)}
   <div class="profile-grid">
    <div><small>车牌</small><strong>${esc(car.plate||'未填写')}</strong></div>
    <div><small>司机</small><strong>${esc(carDrivers(car).map(driver=>driver.name).join('、'))}</strong></div>
@@ -296,17 +376,176 @@ function renderVehicleDetail(){
   </div>
   ${isAdmin?'<button id="editVehicleProfile" class="secondary" type="button">编辑</button>':''}
  </section>`;
- document.querySelector('main').innerHTML='<p id="message" role="status"></p>'+profile+'<div class="stats detail-stats">'+[['累计收入',income],['累计支出',expense],['收支差额',income-expense]].map(([label,value])=>'<div class="stat"><span class="muted">'+label+'</span><strong>¥ '+money(value)+'</strong></div>').join('')+'</div><section><div class="toolbar"><h2>单车收支明细</h2><span class="section-note">仅显示当前车辆</span><input id="start" type="date" aria-label="开始日期" onchange="renderVehicleEntries()"><span>至</span><input id="end" type="date" aria-label="结束日期" onchange="renderVehicleEntries()"><button class="text-button" onclick="clearFilters()">清空筛选</button></div><p id="subtotal"></p><div class="scroll"><table class="vehicle-entries"><thead><tr>'+['日期','收支','项目','金额','起点 → 终点','往来方','操作'].map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody id="vehicleEntries"></tbody></table></div><p class="help">收支差额为已录入收入减支出，不代表会计利润。</p></section>';
+ document.querySelector('main').innerHTML='<p id="message" role="status"></p>'+profile+'<div class="stats detail-stats">'+[['累计收入',income],['累计支出',expense],['收支差额',income-expense]].map(([label,value])=>'<div class="stat"><span class="muted">'+label+'</span><strong>¥ '+money(value)+'</strong></div>').join('')+'</div><section><div class="toolbar"><h2>单车收支明细</h2><span class="section-note">仅显示当前车辆</span><input id="start" type="date" aria-label="开始日期" onchange="renderVehicleEntries()"><span>至</span><input id="end" type="date" aria-label="结束日期" onchange="renderVehicleEntries()"><button class="text-button" onclick="clearFilters()">清空筛选</button></div><p id="subtotal"></p><div class="scroll"><table class="vehicle-entries"><thead><tr>'+['日期','收支','项目','金额','起点 → 终点','往来方','品牌','操作'].map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody id="vehicleEntries"></tbody></table></div><p class="help">收支差额为已录入收入减支出，不代表会计利润。</p></section>';
  $('editVehicleProfile')?.addEventListener('click',()=>carForm(car.id));
  $('start').value=from;$('end').value=to;installLedgerCalendar();installProjectHeaderFilter();installKindHeaderFilter();installRouteHeaderFilters();renderProjectFilters();renderVehicleEntries();
 }
+let filterTableSort=null;
+function sortTableByFilter(panel,descending){
+ filterTableSort={panel,descending};
+ if(page==='/'||page==='/cars'){
+  overviewAmountSort=null;
+  render();
+ }else{
+  vehicleSortColumn='filter';
+  renderVehicleEntries();
+ }
+}
+function installFilterSort(choices){
+ const panel=choices.closest('[popover]').id;
+ sortFilterOptions(choices,descending=>sortTableByFilter(panel,descending));
+}
+function showFilterTableSort(){
+ const table=page==='/'||page==='/cars'?$('cars')?.closest('table'):document.querySelector('.vehicle-entries');
+ if(!table)return;
+ for(const button of document.querySelectorAll('[data-filter-table-sort]')){
+  button.removeAttribute('data-filter-table-sort');
+  button.closest('th')?.removeAttribute('aria-sort');
+ }
+ if(!filterTableSort)return;
+ const {panel,descending}=filterTableSort;
+ for(const button of document.querySelectorAll(`[aria-controls="${panel}"]`)){
+  button.dataset.filterTableSort=descending?'↓':'↑';
+  if(table.contains(button))button.closest('th')?.setAttribute('aria-sort',descending?'descending':'ascending');
+ }
+}
+function ledgerFilterSortValue(entry,plates){
+ switch(filterTableSort.panel){
+  case 'ledgerVehiclePopover':return plates.get(entry.car_id)||'';
+  case 'kindPopover':return entry.kind;
+  case 'projectPopover':return entry.category;
+  case 'startRoutePopover':return routeValue(entry,'start')||'无';
+  case 'endRoutePopover':return routeValue(entry,'end')||'无';
+  case 'partyRoutePopover':return routeValue(entry,'party')||'无';
+ }
+ return '';
+}
 let currentVehicleRows=[];
+let ledgerBatchMode=false;
+let ledgerBatchBusy=false;
+function updateLedgerBatchSelection(){
+ const boxes=[...document.querySelectorAll('#vehicleEntries .ledger-select input')];
+ const count=boxes.filter(box=>box.checked).length;
+ const all=$('ledgerSelectPage');
+ if(!all)return;
+ all.checked=count>0&&count===boxes.length;
+ all.indeterminate=count>0&&count<boxes.length;
+ all.disabled=ledgerBatchBusy||!boxes.length;
+ $('ledgerBatchCount').textContent='已选 '+count+' 笔';
+ $('ledgerBatchDelete').disabled=ledgerBatchBusy||count===0;
+ $('ledgerBatchToggle').disabled=ledgerBatchBusy;
+ boxes.forEach(box=>{box.disabled=ledgerBatchBusy});
+}
+function renderLedgerBatchControls(header,pageRows){
+ const section=$('ledger-section');
+ let toggle=$('ledgerBatchToggle'),actions=$('ledgerBatchActions');
+ if(!isAdmin){
+  ledgerBatchMode=false;
+  toggle?.remove();
+  actions?.remove();
+  return;
+ }
+ if(!toggle){
+  section.querySelector('.toolbar h2').insertAdjacentHTML('beforebegin','<button id="ledgerBatchToggle" type="button" class="text-button" aria-label="批量选择" title="批量选择" aria-pressed="false"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="#e9ddff"/><rect x="6" y="5" width="12" height="14.5" rx="2" fill="#fff" stroke="#b69add"/><rect x="9" y="3.5" width="6" height="3.5" rx="1.4" fill="#8056c7"/><path d="m8.5 11 1 1 1.8-2m-2.8 5 1 1 1.8-2" fill="none" stroke="#208664" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 11h2.5M13 15h2.5" stroke="#a995c4" stroke-linecap="round"/></svg></button>');
+  $('subtotal').insertAdjacentHTML('beforebegin','<div id="ledgerBatchActions" hidden><button id="ledgerBatchDelete" type="button" class="danger" disabled>批量删除</button> <span id="ledgerBatchCount" role="status"></span></div>');
+  toggle=$('ledgerBatchToggle');
+  actions=$('ledgerBatchActions');
+  toggle.onclick=()=>{
+   if(ledgerBatchBusy)return;
+   ledgerBatchMode=!ledgerBatchMode;
+   renderVehicleEntries(true);
+   toggle.focus();
+  };
+  $('ledgerBatchDelete').onclick=deleteLedgerSelection;
+ }
+ toggle.setAttribute('aria-pressed',String(ledgerBatchMode));
+ actions.hidden=!ledgerBatchMode;
+ if(!ledgerBatchMode)return;
+ header.insertAdjacentHTML('afterbegin','<th class="ledger-select" scope="col"><input id="ledgerSelectPage" type="checkbox" aria-label="全选当前页"></th>');
+ const rows=[...$('vehicleEntries').rows];
+ if(!pageRows.length)rows[0].cells[0].colSpan++;
+ pageRows.forEach((entry,index)=>{
+  const cell=rows[index].insertCell(0);
+  cell.className='ledger-select';
+  const box=document.createElement('input');
+  box.type='checkbox';
+  box.value=String(entry.id);
+  box.setAttribute('aria-label','选择收支记录 '+entry.id);
+  box.onchange=updateLedgerBatchSelection;
+  cell.append(box);
+ });
+ $('ledgerSelectPage').onchange=event=>{
+  document.querySelectorAll('#vehicleEntries .ledger-select input').forEach(box=>{box.checked=event.target.checked});
+  updateLedgerBatchSelection();
+ };
+ updateLedgerBatchSelection();
+}
+async function deleteLedgerSelection(){
+ if(ledgerBatchBusy||!isAdmin||page!=='/entries'||!ledgerBatchMode)return;
+ const checked=[...document.querySelectorAll('#vehicleEntries .ledger-select input:checked')];
+ if(!checked.length)return;
+ const ids=checked.map(box=>Number(box.value));
+ ledgerBatchBusy=true;
+ updateLedgerBatchSelection();
+ try{
+  if(!await confirmDialog('确定删除选中的 '+ids.length+' 笔收支账目？删除后无法撤销。'))return;
+  if(!isAdmin||checked.some(box=>!box.isConnected||!box.checked))return;
+  const response=await service.request('/api/entries/delete-batch',{
+   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})
+  });
+  if(!response.ok)throw Error((await response.json()).error||'批量删除失败');
+  const removed=new Set(ids);
+  data.entries=data.entries.filter(entry=>!removed.has(entry.id));
+  renderAllLedger(true);
+  notify('已删除 '+ids.length+' 笔收支账目');
+ }catch(error){
+  if(!$('accountModal').open)await alertDialog(error.message||String(error));
+ }finally{
+  ledgerBatchBusy=false;
+  updateLedgerBatchSelection();
+ }
+}
 let vehicleDateAscending=false,vehicleSortColumn='date',vehicleAmountAscending=false;
 let vehiclePage=1,vehiclePageSize=20;
+function hasVehicleColor(car){
+ return Boolean(car&&Object.hasOwn(vehicleColors,car.color));
+}
+function vehicleColorMarker(car){
+ if(!hasVehicleColor(car))return '';
+ const note=car.note?.trim();
+ return `<span class="vehicle-row-marker" data-color="${car.color}"${note?` title="${esc(note)}"`:''}></span>`;
+}
+function renderVehicleColorMarkers(entries){
+ const cars=new Map(data.cars.map(car=>[car.id,car]));
+ const rows=$('vehicleEntries').rows;
+ entries.forEach((entry,index)=>{
+  const marker=vehicleColorMarker(cars.get(entry.car_id));
+  if(!marker)return;
+  rows[index].classList.add('has-vehicle-marker');
+  rows[index].cells[0].insertAdjacentHTML('afterbegin',marker);
+ });
+}
 function renderVehicleEntries(keepPage=false){
  if(!keepPage)vehiclePage=1;
  const all=ledgerScope(),from=$('start').value,to=$('end').value;
- const rows=all.filter(e=>(page!=='/entries'||ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(e.car_id)))&&(!from||e.date>=from)&&(!to||e.date<=to)&&(vehicleKindSelection===null||vehicleKindSelection.has(e.kind))&&(vehicleProjectSelection===null||vehicleProjectSelection.has(projectKey(e)))&&routeMatches(e)).sort((a,b)=>{
+ const query=$('ledgerSearch')?.value.trim();
+ const matchText=createTextMatcher(query||'');
+ const vehicles=query?new Map(data.cars.map(car=>[car.id,{car,names:carDrivers(car).map(driver=>driver.name)}])):null;
+ const matchesSearch=entry=>{
+  if(!vehicles)return true;
+  const {car,names=[]}=vehicles.get(entry.car_id)||{};
+  return matchText([
+   car?.plate,car?.name,car?.note,...names,entry.category,entry.party,entry.brand,
+   entry.start_address,entry.start_address_detail,entry.end_address,entry.end_address_detail,entry.note
+  ].join(' '),names);
+ };
+ const plates=filterTableSort?.panel==='ledgerVehiclePopover'?new Map(data.cars.map(car=>[car.id,vehicleLabel(car)])):null;
+ const matchesAddressRoute=ledgerAddressMatcher();
+ const rows=all.filter(e=>(page!=='/entries'||ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(e.car_id)))&&(!from||e.date>=from)&&(!to||e.date<=to)&&(vehicleKindSelection===null||vehicleKindSelection.has(e.kind))&&(vehicleProjectSelection===null||vehicleProjectSelection.has(projectKey(e)))&&routeMatches(e)&&matchesAddressRoute(e)&&matchesSearch(e)).sort((a,b)=>{
+  if(vehicleSortColumn==='filter'&&filterTableSort){
+   const difference=compareFilterLabels(ledgerFilterSortValue(a,plates),ledgerFilterSortValue(b,plates));
+   return (filterTableSort.descending?-difference:difference)||b.date.localeCompare(a.date)||b.id-a.id;
+  }
   if(vehicleSortColumn==='amount'){
    const amountDifference=a.cents-b.cents;
    if(amountDifference)return vehicleAmountAscending?amountDifference:-amountDifference;
@@ -314,21 +553,25 @@ function renderVehicleEntries(keepPage=false){
   }
   return vehicleDateAscending?(a.date.localeCompare(b.date)||a.id-b.id):(b.date.localeCompare(a.date)||b.id-a.id);
  });
+ document.querySelector('.vehicle-entries th.ledger-select')?.remove();
  updateVehicleDateHeader();
  currentVehicleRows=rows;
  const pageCount=Math.max(1,Math.ceil(rows.length/vehiclePageSize));vehiclePage=Math.min(vehiclePage,pageCount);
  const pageRows=rows.slice((vehiclePage-1)*vehiclePageSize,vehiclePage*vehiclePageSize);
  const income=sum(rows,'收入'),expense=sum(rows,'支出');
  $('subtotal').textContent=from&&to&&from>to?'开始日期不能晚于结束日期':`当前筛选 ${rows.length} 笔 · 收入 ¥${money(income)} · 支出 ¥${money(expense)} · 差额 ¥${money(income-expense)}`;
- $('vehicleEntries').innerHTML=pageRows.map(e=>`<tr><td>${esc(e.date)}</td><td><span class="badge ${e.kind==='收入'?'income':'expense'}">${esc(e.kind)}</span></td><td>${esc(e.category)}</td><td class="amount ${e.kind==='收入'?'income':'expense'}">${e.kind==='收入'?'+':'−'}${money(e.cents)}</td><td>${routeDisplay(e.start_address,e.start_address_detail)} → ${routeDisplay(e.end_address,e.end_address_detail)}</td><td>${esc(e.party)}</td><td>${isAdmin?`<button type="button" class="secondary" onclick="editLedgerEntry(${e.id})">编辑</button>`:'只读'}</td>${page==='/entries'?`<td><a class="vehicle-link" href="#/cars/${e.car_id}" title="查看车辆资料与收支明细">${esc(vehicleLabel(data.cars.find(c=>c.id===e.car_id)))}</a></td>`:''}</tr>`).join('')||`<tr><td colspan="${page==='/entries'?8:7}" class="empty">${all.length?'没有符合筛选条件的账目。 <button class="text-button" onclick="clearFilters()">清空筛选</button>':(isAdmin?'该车辆暂无收支记录。 <button onclick="entryForm()">记一笔账</button>':'该车辆暂无收支记录。')}</td></tr>`;
+ $('vehicleEntries').innerHTML=pageRows.map(e=>`<tr><td>${esc(e.date)}</td><td><span class="badge ${e.kind==='收入'?'income':'expense'}">${esc(e.kind)}</span></td><td>${esc(e.category)}</td><td class="amount ${e.kind==='收入'?'income':'expense'}">${e.kind==='收入'?'+':'−'}${money(e.cents)}</td><td>${routeDisplay(e.start_address,e.start_address_detail)} → ${routeDisplay(e.end_address,e.end_address_detail)}</td><td>${esc(e.party)}</td><td>${esc(e.brand)}</td><td>${isAdmin?`<button type="button" class="secondary" onclick="editLedgerEntry(${e.id})">编辑</button>`:'只读'}</td>${page==='/entries'?`<td><a class="vehicle-link" href="#/cars/${e.car_id}" title="查看车辆资料与收支明细">${esc(vehicleLabel(data.cars.find(c=>c.id===e.car_id)))}</a></td>`:''}</tr>`).join('')||`<tr><td colspan="${page==='/entries'?9:8}" class="empty">${all.length?'没有符合筛选条件的账目。 <button class="text-button" onclick="clearFilters()">清空筛选</button>':(isAdmin?'该车辆暂无收支记录。 <button onclick="entryForm()">记一笔账</button>':'该车辆暂无收支记录。')}</td></tr>`;
  renderVehiclePagination(rows.length,pageCount);
  renderVehicleTotals(income,expense);
  if(page==='/entries'){
   const table=document.querySelector('.vehicle-entries');table.classList.add('all-ledger-table');
   const header=table.querySelector('thead tr');if(header.lastElementChild?.textContent==='车辆')header.insertBefore(header.lastElementChild,header.children[1]);
   installLedgerVehicleFilter();
-  table.querySelectorAll('tbody tr').forEach(row=>{if(row.cells.length===8)row.insertBefore(row.lastElementChild,row.children[1])});
+  table.querySelectorAll('tbody tr').forEach(row=>{if(row.cells.length===9)row.insertBefore(row.lastElementChild,row.children[1])});
+  renderLedgerBatchControls(header,pageRows);
  }
+ renderVehicleColorMarkers(pageRows);
+ showFilterTableSort();
  refreshTables();
 }
 
@@ -351,19 +594,101 @@ async function expandRegionNodeData(el){if(el.dataset.loaded)return;let items=aw
 async function confirmRegion(){if(!isAdmin){document.getElementById("regionError").textContent="游客模式为只读，请登录管理员账号";return}if(!regionSelection||regionSelection.level<2)return;let {side,id}=regionContext;$('regionConfirm').disabled=true;$('regionError').textContent='';try{let existing=data.addresses.find(a=>a.active&&a.region_code===regionSelection.code);let target=existing;if(!existing||id){let r=await service.request('/api/addresses',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({region_code:regionSelection.code,...(id?{id}:{})})});let result=await r.json();if(!r.ok)throw Error(result.error);let fresh=await service.request('/api/data');if(!fresh.ok)throw Error('已保存，刷新失败，请重试');data=await fresh.json();target=data.addresses.find(a=>a.active&&a.region_code===regionSelection.code)}if(side){$('form').elements[side+'_address'].value=addressLabel(target);syncRoute()}else renderAddresses();closeRegion();notify(side?'地区已选择并加入常用':'常用地区已保存')}catch(e){$('regionError').textContent=e.message||'保存失败，请重试'}finally{$('regionConfirm').disabled=false}}
 const customAddressForm=addressForm;
 addressForm=function(id){const address=data.addresses.find(address=>address.id===id);if(address&&!address.region_code){customAddressForm(id);return}openRegion(null,id)};
-renderAddresses=function(){document.querySelector('main').innerHTML=`<p id="message" role="status"></p><section><div class="toolbar"><h2>全国行政区划</h2><button onclick="openRegion()">浏览省 / 市 / 区县 / 乡镇</button></div><p class="help">基础库只读，选择地区可加入常用。数据版本：2023-06-30，覆盖大陆31个省级地区，不含港澳台；不代表最新区划。</p></section><section><div class="toolbar"><h2>常用地区</h2><input id="addressSearch" placeholder="搜索常用地区" oninput="renderAddressRows()">${isAdmin?'<button onclick="openRegion()">＋ 添加常用地区</button>':''}</div><p class="help">修改或移除常用地区不影响基础库与历史路线。</p><table><thead><tr><th>地区</th><th>说明</th><th>操作</th></tr></thead><tbody id="addressRows"></tbody></table></section><section><div class="toolbar"><h2>自定义地址</h2><input id="customAddressSearch" aria-label="搜索自定义地址" placeholder="搜索名称或详细地址" oninput="renderCustomAddressRows()">${isAdmin?'<button onclick="customAddressForm()">＋ 新增自定义地址</button>':''}</div><table class="custom-address-table"><thead><tr><th>地址名称</th><th>详细地址</th><th>操作</th><th class="custom-address-repeat" aria-hidden="true">地址名称</th><th class="custom-address-repeat" aria-hidden="true">详细地址</th><th class="custom-address-repeat" aria-hidden="true">操作</th></tr></thead><tbody id="customAddressRows"></tbody></table></section>`;renderAddressRows();renderCustomAddressRows()};
-renderAddressRows=function(){const matchText=createTextMatcher($('addressSearch').value);$('addressRows').innerHTML=data.addresses.filter(a=>a.active&&a.region_code&&matchText(addressLabel(a))).map(a=>`<tr><td>${esc(a.name)}</td><td>行政区划常用地区</td><td>${isAdmin?`<button onclick="openRegion(null,${a.id})">修改</button><button class="danger" onclick="removeAddress(${a.id})">移除常用</button>`:'只读'}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">暂无常用地区。</td></tr>';refreshTables()};
+renderAddresses=function(){document.querySelector('main').innerHTML=`<p id="message" role="status"></p><section><div class="toolbar"><h2>全国行政区划</h2><button onclick="openRegion()">浏览省 / 市 / 区县 / 乡镇</button></div><p class="help">基础库只读，选择地区可加入常用。数据版本：2023-06-30，覆盖大陆31个省级地区，不含港澳台；不代表最新区划。</p></section><section><div class="toolbar"><h2>常用地区</h2><input id="addressSearch" placeholder="搜索常用地区" oninput="renderAddressRows()">${isAdmin?'<button onclick="openRegion()">＋ 添加常用地区</button>':''}</div><p class="help">修改或移除常用地区不影响基础库与历史路线。</p><table><thead><tr><th>地区</th><th>说明</th><th>操作</th></tr></thead><tbody id="addressRows"></tbody></table></section><section><div class="toolbar"><h2>自定义地址</h2><input id="customAddressSearch" aria-label="搜索自定义地址" placeholder="搜索名称或详细地址" oninput="renderCustomAddressRows()">${isAdmin?'<button onclick="customAddressForm()">＋ 新增自定义地址</button><button type="button" class="secondary address-merge-trigger" onclick="openAddressMerge()">合并重复项</button>':''}</div><table class="custom-address-table"><thead><tr><th>地址名称</th><th>详细地址</th><th>操作</th><th class="custom-address-repeat" aria-hidden="true">地址名称</th><th class="custom-address-repeat" aria-hidden="true">详细地址</th><th class="custom-address-repeat" aria-hidden="true">操作</th></tr></thead><tbody id="customAddressRows"></tbody></table></section>`;renderAddressRows();renderCustomAddressRows()};
+renderAddressRows=function(){const matchText=createTextMatcher($('addressSearch').value);$('addressRows').innerHTML=data.addresses.filter(a=>a.active&&a.region_code&&matchesAddress(a,matchText)).map(a=>`<tr><td>${esc(a.name)}</td><td>行政区划常用地区</td><td>${isAdmin?`<button onclick="openRegion(null,${a.id})">修改</button><button class="danger" onclick="removeAddress(${a.id})">移除常用</button>`:'只读'}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">暂无常用地区。</td></tr>';refreshTables()};
+async function requestAddressMerge(action,payload={}){
+ const response=await service.request('/api/addresses/'+action,{
+  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)
+ });
+ const result=await response.json();
+ if(!response.ok)throw Error(result.error||'地址合并请求失败');
+ return result;
+}
+function openAddressMerge(){
+ if(!isAdmin)return;
+ subview=null;
+ openForm('合并重复项',`<div class="address-merge-tools">
+  <button type="button" class="text-button" id="addressMergeSelectAll" aria-label="全选可合并项" title="全选可合并项" disabled>
+   <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="2" y="2" width="20" height="20" rx="5" fill="#e9ddff"/>
+    <rect x="6" y="6" width="12" height="12" rx="3" fill="#fff" stroke="#8056c7"/>
+    <path class="merge-select-check" d="m8.5 12 2.3 2.3 4.7-4.7" fill="none" stroke="#8056c7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path class="merge-select-clear" d="M9 12h6" fill="none" stroke="#8056c7" stroke-width="1.6" stroke-linecap="round"/>
+   </svg>
+  </button>
+  <span id="addressMergeCount" role="status"></span>
+ </div><div id="addressMergeCandidates"></div><button type="button" class="secondary" id="refreshAddressMerge">刷新候选</button>`,'');
+ const list=$('addressMergeCandidates'),save=$('save'),refresh=$('refreshAddressMerge');
+ const selectAll=$('addressMergeSelectAll'),count=$('addressMergeCount');
+ save.textContent='确认合并';
+ const eligible=()=>[...list.querySelectorAll('input:not(:disabled)')];
+ const selected=()=>eligible().filter(box=>box.checked).map(box=>JSON.parse(box.value));
+ const updateButton=()=>{
+  const total=list.querySelectorAll('input').length;
+  const available=eligible().length,checked=selected().length;
+  const all=available>0&&checked===available;
+  save.disabled=refresh.disabled||checked===0;
+  selectAll.disabled=refresh.disabled||available===0;
+  selectAll.setAttribute('aria-pressed',String(all));
+  selectAll.title=all?'取消全选':'全选可合并项';
+  selectAll.setAttribute('aria-label',selectAll.title);
+  count.textContent=`发现 ${total} 组重复项 · 已选 ${checked} 组`+(total>available?` · ${total-available} 组不可合并`:'');
+ };
+ selectAll.onclick=()=>{
+  const boxes=eligible(),check=boxes.some(box=>!box.checked);
+  boxes.forEach(box=>{box.checked=check});
+  updateButton();
+ };
+ async function refreshCandidates(){
+  save.disabled=refresh.disabled=selectAll.disabled=true;
+  $('error').textContent='';
+  count.textContent='';
+  list.textContent='正在检查自定义地址…';
+  try{
+   const {pairs}=await requestAddressMerge('merge-preview');
+   list.innerHTML=pairs.length?pairs.map(pair=>`<label class="address-merge-pair"><input type="checkbox" value="${esc(JSON.stringify({source_id:pair.source_id,target_id:pair.target_id}))}" ${pair.blocked?'disabled':''}><span><strong>${esc(pair.source_name)} → ${esc(pair.target_name)}</strong><small>合并后别名：${esc(pair.aliases.join('、'))}</small>${pair.blocked?`<small class="field-error">${esc(pair.blocked)}</small>`:''}</span></label>`).join(''):'<p class="help">未发现仅相差「市」的自定义地址。</p>';
+  }catch(error){
+   list.textContent='';
+   $('error').textContent=error.message||String(error);
+  }finally{
+   refresh.disabled=false;
+   updateButton();
+  }
+ }
+ list.onchange=updateButton;
+ refresh.onclick=refreshCandidates;
+ $('form').onsubmit=async event=>{
+  event.preventDefault();
+  if(save.disabled)return;
+  const pairs=selected();
+  save.disabled=refresh.disabled=selectAll.disabled=true;
+  try{
+   if(!await confirmDialog('确定合并所选的 '+pairs.length+' 组地址？'))return;
+   const result=await requestAddressMerge('merge',{pairs});
+   $('modal').close();
+   await load();
+   notify('已合并 '+result.merged+' 组地址');
+  }catch(error){
+   if($('modal').open)$('error').textContent=(error.message||String(error))+'。请刷新候选后重试。';
+  }finally{
+   refresh.disabled=false;
+   updateButton();
+   if(!$('modal').open)save.disabled=false;
+  }
+ };
+ refreshCandidates();
+}
 function renderCustomAddressRows(){
  const query=$('customAddressSearch').value.trim(),matchText=createTextMatcher(query);
- const addresses=data.addresses.filter(address=>address.active&&!address.region_code&&matchText(addressLabel(address)));
- $('customAddressRows').innerHTML=addresses.map(address=>`<tr><td>${esc(address.name)}</td><td>${esc(address.detail)}</td><td>${isAdmin?`<button onclick="customAddressForm(${address.id})">修改</button><button class="danger" onclick="removeAddress(${address.id})">删除</button>`:'只读'}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">'+(query?'没有匹配的自定义地址':(isAdmin?'暂无自定义地址，请新增':'暂无自定义地址'))+'</td></tr>';
+ const addresses=data.addresses.filter(address=>address.active&&!address.region_code&&matchesAddress(address,matchText));
+ $('customAddressRows').innerHTML=addresses.map(address=>`<tr><td><a class="address-ledger-link" href="#/entries?address=${encodeURIComponent(address.id)}">${esc(address.name)}</a></td><td>${esc(address.detail)}</td><td>${isAdmin?`<button onclick="customAddressForm(${address.id})">修改</button><button class="danger" onclick="removeAddress(${address.id})">删除</button>`:'只读'}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">'+(query?'没有匹配的自定义地址':(isAdmin?'暂无自定义地址，请新增':'暂无自定义地址'))+'</td></tr>';
  refreshTables();
 }
 function colorBalances(){
  const apply=(el,value)=>{if(!el)return;el.style.color=value>0?'#148365':value<0?'#bf6630':'var(--muted)'};
  const car=data.cars.find(c=>c.id===detailId);
  if(detailId!==null&&car){const rows=ledgerScope();apply(document.querySelector('.detail-stats .stat:last-child strong'),sum(rows,'收入')-sum(rows,'支出'))}
- else if(page==='/'||page==='/cars'||page==='/entries'){apply(document.querySelector('#stats .stat:last-child strong'),sum(vehicleOverviewEntries(),'收入')-sum(vehicleOverviewEntries(),'支出'));document.querySelectorAll('#cars tr').forEach(tr=>{if(tr.cells.length<6)return;const value=Number(tr.cells[4].textContent.replace(/,/g,''));apply(tr.cells[4],value)})}
+ else if(page==='/'||page==='/cars'||page==='/entries'){apply(document.querySelector('#stats .stat:last-child strong'),sum(vehicleOverviewEntries(),'收入')-sum(vehicleOverviewEntries(),'支出'));document.querySelectorAll('#cars tr').forEach(tr=>{if(tr.cells.length<7)return;const value=Number(tr.cells[5].textContent.replace(/,/g,''));apply(tr.cells[5],value)})}
 }
 const balanceRender=render;render=function(){balanceRender();colorBalances()};
 const balanceDetailRender=renderVehicleDetail;renderVehicleDetail=function(){balanceDetailRender();colorBalances()};
@@ -388,6 +713,7 @@ function renderProjectFilters(){
  const all=vehicleProjectSelection===null;
  choices.innerHTML=`<button type="button" class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="allVehicleProjects()">全部项目</button>`+
   matches.map(([key,e])=>`<label class="project-chip"><input type="checkbox" value="${esc(key)}" ${all||vehicleProjectSelection.has(key)?'checked':''} onchange="toggleVehicleProject(this)"><span>${esc(e.category)}<small>${esc(e.kind)}</small></span></label>`).join('');
+ installFilterSort(choices);
  if(!matches.length)choices.insertAdjacentHTML('beforeend',`<span class="help">${projects.length?'没有匹配的项目':'暂无可筛选项目'}</span>`);
 }
 function allVehicleProjects(){vehicleProjectSelection=vehicleProjectSelection===null?new Set():null;renderProjectFilters();renderVehicleEntries()}
@@ -426,11 +752,13 @@ function updateVehicleDateHeader(){
 }
 function toggleVehicleLedgerSort(column){
  if(column==='date')return toggleVehicleDateSort();
+ filterTableSort=null;
  vehicleAmountAscending=vehicleSortColumn==='amount'&&!vehicleAmountAscending;
  vehicleSortColumn='amount';
  renderVehicleEntries();
 }
 function toggleVehicleDateSort(){
+ filterTableSort=null;
  vehicleDateAscending=vehicleSortColumn==='date'&&!vehicleDateAscending;
  vehicleSortColumn='date';
  renderVehicleEntries();
@@ -442,7 +770,7 @@ function installKindHeaderFilter(){
  document.querySelector('.vehicle-entries').closest('section').querySelector('.toolbar').insertAdjacentHTML('beforeend','<button class="project-header-button mobile-project-filter" onclick="openKindFilter(this)" aria-haspopup="dialog" aria-expanded="false" aria-controls="kindPopover">收支 ▾</button>');
  $('kindPopover').addEventListener('toggle',e=>document.querySelectorAll('[aria-controls="kindPopover"]').forEach(b=>b.setAttribute('aria-expanded',String(e.newState==='open'))));renderKindFilters();
 }
-function renderKindFilters(){if(!$('kindChoices'))return;const all=vehicleKindSelection===null;$('kindChoices').innerHTML=`<button class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="toggleAllKinds()">全部收支</button>`+['收入','支出'].map(kind=>`<label class="project-chip"><input type="checkbox" value="${kind}" ${all||vehicleKindSelection.has(kind)?'checked':''} onchange="toggleKind(this)"><span class="${kind==='收入'?'income':'expense'}">${kind}</span></label>`).join('');document.querySelectorAll('[aria-controls="kindPopover"]').forEach(b=>{b.textContent=all?'收支 ▾':vehicleKindSelection.size?[...vehicleKindSelection].join('、')+' ▾':'收支（0） ▾';b.classList.toggle('is-filtered',!all)})}
+function renderKindFilters(){if(!$('kindChoices'))return;const all=vehicleKindSelection===null;$('kindChoices').innerHTML=`<button class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="toggleAllKinds()">全部收支</button>`+['收入','支出'].map(kind=>`<label class="project-chip"><input type="checkbox" value="${kind}" ${all||vehicleKindSelection.has(kind)?'checked':''} onchange="toggleKind(this)"><span class="${kind==='收入'?'income':'expense'}">${kind}</span></label>`).join('');installFilterSort($('kindChoices'));document.querySelectorAll('[aria-controls="kindPopover"]').forEach(b=>{b.textContent=all?'收支 ▾':vehicleKindSelection.size?[...vehicleKindSelection].join('、')+' ▾':'收支（0） ▾';b.classList.toggle('is-filtered',!all)})}
 function toggleAllKinds(){vehicleKindSelection=vehicleKindSelection===null?new Set():null;renderKindFilters();renderVehicleEntries()}
 function toggleKind(input){if(vehicleKindSelection===null)vehicleKindSelection=new Set(['收入','支出']);if(input.checked)vehicleKindSelection.add(input.value);else vehicleKindSelection.delete(input.value);if(vehicleKindSelection.size===2)vehicleKindSelection=null;renderKindFilters();renderVehicleEntries()}
 function openKindFilter(button){const panel=$('kindPopover');if(panel.matches(':popover-open')){panel.hidePopover();return}panel.showPopover();const r=button.getBoundingClientRect();panel.style.left=Math.max(12,Math.min(r.left,innerWidth-panel.offsetWidth-12))+'px';panel.style.top=Math.max(12,Math.min(r.bottom+8,innerHeight-panel.offsetHeight-12))+'px'}
@@ -493,7 +821,7 @@ function installRouteHeaderFilters(){
  $(side+'RoutePopover').addEventListener('toggle',e=>document.querySelectorAll(`[aria-controls="${side}RoutePopover"]`).forEach(b=>b.setAttribute('aria-expanded',String(e.newState==='open'))));renderRouteFilters(side);
  }
 }
-function renderRouteFilters(side){const box=$(side+'RouteChoices');if(!box)return;const selected=vehicleRouteSelection[side],all=selected===null,title=side==='party'?'往来方':side==='start'?'起点':'终点',matchText=createTextMatcher($(side+'RouteSearch').value);const choices=vehicleRouteChoices(side).filter(value=>matchText(value||'无'));box.innerHTML=`<button class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="toggleAllRoutes('${side}')">全部${title}</button>`+choices.map(value=>`<label class="project-chip"><input type="checkbox" value="${esc(value)}" ${all||selected.has(value)?'checked':''} onchange="toggleRoute('${side}',this)"><span>${esc(value)||'无'}</span></label>`).join('')+(!choices.length?'<p class="help">没有匹配地点</p>':'');document.querySelectorAll(`[aria-controls="${side}RoutePopover"]`).forEach(b=>{b.textContent=all?title+' ▾':title+'（'+selected.size+'） ▾';b.classList.toggle('is-filtered',!all)})}
+function renderRouteFilters(side){const box=$(side+'RouteChoices');if(!box)return;const selected=vehicleRouteSelection[side],all=selected===null,title=side==='party'?'往来方':side==='start'?'起点':'终点',matchText=createTextMatcher($(side+'RouteSearch').value);const choices=vehicleRouteChoices(side).filter(value=>matchText(value||'无'));box.innerHTML=`<button class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="toggleAllRoutes('${side}')">全部${title}</button>`+choices.map(value=>`<label class="project-chip"><input type="checkbox" value="${esc(value)}" ${all||selected.has(value)?'checked':''} onchange="toggleRoute('${side}',this)"><span>${esc(value)||'无'}</span></label>`).join('')+(!choices.length?'<p class="help">没有匹配地点</p>':'');installFilterSort(box);document.querySelectorAll(`[aria-controls="${side}RoutePopover"]`).forEach(b=>{b.textContent=all?title+' ▾':title+'（'+selected.size+'） ▾';b.classList.toggle('is-filtered',!all)})}
 function toggleAllRoutes(side){vehicleRouteSelection[side]=vehicleRouteSelection[side]===null?new Set():null;renderRouteFilters(side);renderVehicleEntries()}
 function toggleRoute(side,input){let selected=vehicleRouteSelection[side];if(selected===null)selected=new Set(vehicleRouteChoices(side));if(input.checked)selected.add(input.value);else selected.delete(input.value);vehicleRouteSelection[side]=selected.size===vehicleRouteChoices(side).length?null:selected;renderRouteFilters(side);renderVehicleEntries()}
 function openRouteFilter(button,side){const panel=$(side+'RoutePopover');if(panel.matches(':popover-open')){panel.hidePopover();return}panel.showPopover();const r=button.getBoundingClientRect();panel.style.left=Math.max(12,Math.min(r.left,innerWidth-panel.offsetWidth-12))+'px';panel.style.top=Math.max(12,Math.min(r.bottom+8,innerHeight-panel.offsetHeight-12))+'px'}
@@ -506,12 +834,15 @@ function renderVehiclePagination(total,pages){
 function goVehiclePage(page){vehiclePage=Math.max(1,Math.min(page,Math.max(1,Math.ceil(currentVehicleRows.length/vehiclePageSize))));renderVehicleEntries(true)}
 function changeVehiclePageSize(size){vehiclePageSize=[20,50,80].includes(Number(size))?Number(size):20;renderVehicleEntries()}
 function ledgerScope(){return detailId===null?data.entries:data.entries.filter(e=>e.car_id===detailId)}
-function renderAllLedger(){
+function renderAllLedger(keepPage=false){
  const from=$('start')?.value||'',to=$('end')?.value||'',carId=$('filter')?.value||'';
  const main=document.querySelector('main');
  if(!document.querySelector('.vehicle-entries')){
+ const title=$('ledger-section').querySelector('.toolbar h2');
+ title.insertAdjacentHTML('afterend','<input id="ledgerSearch" type="search" aria-label="搜索收支明细" placeholder="搜索车牌、司机或账目">');
+ $('ledgerSearch').addEventListener('input',()=>renderVehicleEntries());
  const table=$('entries').closest('table');table.classList.add('vehicle-entries');
- table.querySelector('thead tr').innerHTML=['日期','收支','项目','金额','起点 → 终点','往来方','操作','车辆'].map(t=>'<th>'+t+'</th>').join('');
+ table.querySelector('thead tr').innerHTML=['日期','收支','项目','金额','起点 → 终点','往来方','品牌','操作','车辆'].map(t=>'<th>'+t+'</th>').join('');
  $('entries').id='vehicleEntries';
  $('filter').hidden=true;
  $('start').setAttribute('onchange','renderVehicleEntries()');$('end').setAttribute('onchange','renderVehicleEntries()');
@@ -521,7 +852,7 @@ function renderAllLedger(){
  $('filter').innerHTML='<option value="">全部车辆</option>'+options();$('filter').value=carId;$('start').value=from;$('end').value=to;
  const income=sum(data.entries,'收入'),expense=sum(data.entries,'支出');
  $('stats').innerHTML=[['车辆总数',data.cars.length+' 台'],['累计收入','¥ '+money(income)],['累计支出','¥ '+money(expense)],['收支差额','¥ '+money(income-expense)]].map(([title,value])=>`<div class="stat"><span class="muted">${title}</span><strong>${value}</strong></div>`).join('');
- renderVehicleEntries();colorBalances();
+ renderVehicleEntries(keepPage);colorBalances();
 }
 
 function ledgerVehicleChoices(){if(page==='/'||page==='/cars')return data.cars;const ids=new Set(data.entries.map(e=>e.car_id));return data.cars.filter(c=>ids.has(c.id))}
@@ -532,7 +863,7 @@ function installLedgerVehicleFilter(){
  document.querySelector(page==='/entries'?'#ledger-section .toolbar':'#vehicle-list .toolbar').insertAdjacentHTML('beforeend','<button class="project-header-button mobile-project-filter" onclick="openLedgerVehicleFilter(this)" aria-haspopup="dialog" aria-expanded="false" aria-controls="ledgerVehiclePopover">车辆 ▾</button>');
  $('ledgerVehiclePopover').addEventListener('toggle',e=>document.querySelectorAll('[aria-controls="ledgerVehiclePopover"]').forEach(b=>b.setAttribute('aria-expanded',String(e.newState==='open'))));renderLedgerVehicleFilter();
 }
-function renderLedgerVehicleFilter(){if(!$('ledgerVehicleChoices'))return;const all=ledgerVehicleSelection===null,matchText=createTextMatcher($('ledgerVehicleSearch').value);const cars=ledgerVehicleChoices().filter(c=>matchText(vehicleLabel(c)));$('ledgerVehicleChoices').innerHTML=`<button class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="toggleAllLedgerVehicles()">全部车辆</button>`+cars.map(c=>`<label class="project-chip"><input type="checkbox" value="${c.id}" ${all||ledgerVehicleSelection.has(String(c.id))?'checked':''} onchange="toggleLedgerVehicle(this)"><span>${esc(vehicleLabel(c))}</span></label>`).join('')+(!cars.length?'<p class="help">没有匹配车辆</p>':'');document.querySelectorAll('[aria-controls="ledgerVehiclePopover"]').forEach(b=>{const title=page==='/entries'?'车辆':'车牌';b.textContent=all?title+' ▾':`${title}（${ledgerVehicleSelection.size}） ▾`;b.classList.toggle('is-filtered',!all)})}
+function renderLedgerVehicleFilter(){if(!$('ledgerVehicleChoices'))return;const all=ledgerVehicleSelection===null,matchText=createTextMatcher($('ledgerVehicleSearch').value);const cars=ledgerVehicleChoices().filter(c=>matchText(vehicleLabel(c)));$('ledgerVehicleChoices').innerHTML=`<button class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="toggleAllLedgerVehicles()">全部车辆</button>`+cars.map(c=>`<label class="project-chip"><input type="checkbox" value="${c.id}" ${all||ledgerVehicleSelection.has(String(c.id))?'checked':''} onchange="toggleLedgerVehicle(this)"><span>${esc(vehicleLabel(c))}</span></label>`).join('')+(!cars.length?'<p class="help">没有匹配车辆</p>':'');installFilterSort($('ledgerVehicleChoices'));document.querySelectorAll('[aria-controls="ledgerVehiclePopover"]').forEach(b=>{const title=page==='/entries'?'车辆':'车牌';b.textContent=all?title+' ▾':`${title}（${ledgerVehicleSelection.size}） ▾`;b.classList.toggle('is-filtered',!all)})}
 function toggleAllLedgerVehicles(){ledgerVehicleSelection=ledgerVehicleSelection===null?new Set():null;renderLedgerVehicleFilter();if(page==='/entries')renderVehicleEntries();else render()}
 function toggleLedgerVehicle(input){let selected=ledgerVehicleSelection===null?new Set(ledgerVehicleChoices().map(c=>String(c.id))):ledgerVehicleSelection;if(input.checked)selected.add(input.value);else selected.delete(input.value);ledgerVehicleSelection=selected.size===ledgerVehicleChoices().length?null:selected;renderLedgerVehicleFilter();if(page==='/entries')renderVehicleEntries();else render()}
 function openLedgerVehicleFilter(button){const panel=$('ledgerVehiclePopover');if(panel.matches(':popover-open')){panel.hidePopover();return}panel.showPopover();let r=button.getBoundingClientRect();panel.style.left=Math.max(12,Math.min(r.left,innerWidth-panel.offsetWidth-12))+'px';panel.style.top=Math.max(12,Math.min(r.bottom+8,innerHeight-panel.offsetHeight-12))+'px'}
@@ -549,6 +880,7 @@ function renderVehicleDriverFilter(){
  const all=vehicleDriverSelection===null,matchText=createTextMatcher($('vehicleDriverSearch').value);
  const choices=vehicleDriverChoices().filter(driver=>matchText([driver.name,driver.phone].join(' '),[driver.name]));
  $('vehicleDriverChoices').innerHTML=`<button class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="toggleAllVehicleDrivers()">全部司机</button>`+choices.map(driver=>`<label class="project-chip"><input type="checkbox" value="${driver.id}" ${all||vehicleDriverSelection.has(driver.id)?'checked':''} onchange="toggleVehicleDriver(this)"><span>${esc(driver.name)}${driver.phone?'<small>'+esc(driver.phone)+'</small>':''}</span></label>`).join('')+(!choices.length?'<p class="help">没有匹配司机</p>':'');
+ installFilterSort($('vehicleDriverChoices'));
  document.querySelectorAll('[aria-controls="vehicleDriverPopover"]').forEach(button=>{button.textContent=all?'司机 ▾':`司机（${vehicleDriverSelection.size}） ▾`;button.classList.toggle('is-filtered',!all)});
 }
 function toggleAllVehicleDrivers(){vehicleDriverSelection=vehicleDriverSelection===null?new Set():null;render()}
@@ -563,18 +895,31 @@ function openVehicleDriverFilter(button){
 }
 
 function vehicleOverviewEntries(){if(page!=='/'&&page!=='/cars')return data.entries;const from=$('start')?.value||'',to=$('end')?.value||'';return data.entries.filter(e=>(!from||e.date>=from)&&(!to||e.date<=to))}
-function installVehicleOverviewDates(){if(page!=='/'&&page!=='/cars')return;let toolbar=$('vehicle-list').querySelector('.toolbar');let controls=document.createElement('div');controls.className='vehicle-date-controls';toolbar.append(controls);for(const id of ['start','end']){const input=$(id);input.setAttribute('onchange','render()');controls.append(input);if(id==='start'){let separator=document.createElement('span');separator.textContent='至';controls.append(separator)}}controls.insertAdjacentHTML('beforeend','<button type="button" class="text-button" onclick="clearFilters()">清空筛选</button>');installLedgerCalendar();toolbar.insertAdjacentHTML('afterend','<p id="vehicleDateHint" class="help"></p>')}
-const overviewDateRender=render;render=function(){overviewDateRender();if(page==='/'||page==='/cars'){const from=$('start').value,to=$('end').value;const active=!!(from||to);const cards=document.querySelectorAll('#stats .stat .muted');if(active){cards[1].textContent='期间收入';cards[2].textContent='期间支出'}$('vehicleDateHint').textContent=from&&to&&from>to?'开始日期不能晚于结束日期，请调整日期。':active?'统计期间：'+(from||'不限开始')+' 至 '+(to||'不限结束')+'；无收支的车辆显示为零。':'全部日期 · 显示各车累计收支';}}
+function installVehicleOverviewDates(){if(page!=='/'&&page!=='/cars')return;let toolbar=$('vehicle-list').querySelector('.toolbar');let controls=document.createElement('div');controls.className='vehicle-date-controls';toolbar.append(controls);for(const id of ['start','end']){const input=$(id);input.setAttribute('onchange','render()');controls.append(input);if(id==='start'){let separator=document.createElement('span');separator.textContent='至';controls.append(separator)}}controls.insertAdjacentHTML('beforeend','<button type="button" class="text-button" onclick="clearFilters()">清空筛选</button>');installLedgerCalendar();toolbar.insertAdjacentHTML('afterend','<p id="vehicleOverviewSubtotal" role="status"></p>')}
+const overviewDateRender=render;render=function(){overviewDateRender();if(page==='/'||page==='/cars'){const from=$('start').value,to=$('end').value;const active=!!(from||to);const cards=document.querySelectorAll('#stats .stat .muted');if(active){cards[1].textContent='期间收入';cards[2].textContent='期间支出'}}}
 
 function vehicleOverviewFilteredRows(){const matchText=createTextMatcher($('search').value),ids=new Set(data.cars.filter(c=>(ledgerVehicleSelection===null||ledgerVehicleSelection.has(String(c.id)))&&carMatches(c,matchText)).map(c=>c.id));return {cars:ids.size,rows:vehicleOverviewEntries().filter(e=>ids.has(e.car_id))}}
-function renderVehicleOverviewTotals(){if(page!=='/'&&page!=='/cars')return;const {cars,rows}=vehicleOverviewFilteredRows(),income=sum(rows,'收入'),expense=sum(rows,'支出'),balance=income-expense;let footer=$('vehicleOverviewTotals');if(!footer){$('vehicle-list').insertAdjacentHTML('beforeend','<div id="vehicleOverviewTotals" class="ledger-totals" aria-live="polite"></div>');footer=$('vehicleOverviewTotals')}footer.innerHTML=`<div class="totals-label">当前车辆合计<small>${cars} 辆 · ${rows.length} 笔</small></div><div><span>收入</span><strong class="income">+¥${money(income)}</strong></div><div><span>支出</span><strong class="expense">−¥${money(expense)}</strong></div><div><span>差额</span><strong class="${balance>0?'income':balance<0?'expense':'muted'}">${balance>0?'+':balance<0?'−':''}¥${money(Math.abs(balance))}</strong></div>${isDesktop?'<button type="button" onclick="exportVehicleOverview()">导出当前明细</button>':''}`}
+function renderVehicleOverviewTotals(){if(page!=='/'&&page!=='/cars')return;const {cars,rows}=vehicleOverviewFilteredRows(),income=sum(rows,'收入'),expense=sum(rows,'支出'),balance=income-expense;const from=$('start').value,to=$('end').value;
+ $('vehicleOverviewSubtotal').textContent=from&&to&&from>to
+  ?'开始日期不能晚于结束日期，请调整日期。'
+  :`当前筛选 ${rows.length} 笔 · 收入 ¥${money(income)} · 支出 ¥${money(expense)} · 差额 ¥${money(balance)}`;
+ let footer=$('vehicleOverviewTotals');if(!footer){$('vehicle-list').insertAdjacentHTML('beforeend','<div id="vehicleOverviewTotals" class="ledger-totals" aria-live="polite"></div>');footer=$('vehicleOverviewTotals')}footer.innerHTML=`<div class="totals-label">当前车辆合计<small>${cars} 辆 · ${rows.length} 笔</small></div><div><span>收入</span><strong class="income">+¥${money(income)}</strong></div><div><span>支出</span><strong class="expense">−¥${money(expense)}</strong></div><div><span>差额</span><strong class="${balance>0?'income':balance<0?'expense':'muted'}">${balance>0?'+':balance<0?'−':''}¥${money(Math.abs(balance))}</strong></div>${isDesktop?'<button type="button" onclick="exportVehicleOverview()">导出当前明细</button>':''}`}
 async function exportVehicleOverview(){currentVehicleRows=vehicleOverviewFilteredRows().rows;await exportVehicleRows()}
 const renderWithOverviewTotals=render;render=function(){renderWithOverviewTotals();renderVehicleOverviewTotals();renderVehicleDriverFilter()};
 
 
 let overviewAmountSort=null,overviewAmountAscending=false;
-function toggleOverviewAmountSort(column){if(overviewAmountSort===column)overviewAmountAscending=!overviewAmountAscending;else{overviewAmountSort=column;overviewAmountAscending=false}render()}
-function sortVehicleOverview(){if(page!=='/'&&page!=='/cars')return;const headers=document.querySelectorAll('table:has(#cars) th');for(const [column,title] of [[2,'收入'],[3,'支出'],[4,'收支差额']]){const active=overviewAmountSort===column;headers[column].setAttribute('aria-sort',active?(overviewAmountAscending?'ascending':'descending'):'none');headers[column].innerHTML=`<button type="button" class="project-header-button ${active?'is-filtered':''}" onclick="toggleOverviewAmountSort(${column})" aria-label="${title}排序${active?(overviewAmountAscending?'，当前从低到高':'，当前从高到低'):''}">${title} ${active?(overviewAmountAscending?'↑':'↓'):'↕'}</button>`}if(overviewAmountSort===null)return;const rows=[...$('cars').rows].filter(r=>r.cells.length===6);const value=row=>{let number=Number(row.cells[overviewAmountSort].textContent.replace(/,/g,'').replace('−','-'));return overviewAmountSort===3?Math.abs(number):number};rows.sort((a,b)=>(overviewAmountAscending?value(a)-value(b):value(b)-value(a))||a.cells[0].textContent.localeCompare(b.cells[0].textContent,'zh-CN'));rows.forEach(row=>$('cars').append(row))}
+function toggleOverviewAmountSort(column){filterTableSort=null;if(overviewAmountSort===column)overviewAmountAscending=!overviewAmountAscending;else{overviewAmountSort=column;overviewAmountAscending=false}render()}
+function sortVehicleOverview(){if(page!=='/'&&page!=='/cars')return;const headers=document.querySelectorAll('table:has(#cars) th');for(const [column,title] of [[3,'收入'],[4,'支出'],[5,'收支差额']]){const active=overviewAmountSort===column;headers[column].setAttribute('aria-sort',active?(overviewAmountAscending?'ascending':'descending'):'none');headers[column].innerHTML=`<button type="button" class="project-header-button ${active?'is-filtered':''}" onclick="toggleOverviewAmountSort(${column})" aria-label="${title}排序${active?(overviewAmountAscending?'，当前从低到高':'，当前从高到低'):''}">${title} ${active?(overviewAmountAscending?'↑':'↓'):'↕'}</button>`}showFilterTableSort();
+ const rows=[...$('cars').rows].filter(row=>row.cells.length===7);
+ if(filterTableSort){
+  const column=filterTableSort.panel==='vehicleDriverPopover'?1:0;
+  const direction=filterTableSort.descending?-1:1;
+  rows.sort((a,b)=>direction*compareFilterLabels(a.cells[column].textContent,b.cells[column].textContent));
+  $('cars').append(...rows);
+  return;
+ }
+ if(overviewAmountSort===null)return;const value=row=>{let number=Number(row.cells[overviewAmountSort].textContent.replace(/,/g,'').replace('−','-'));return overviewAmountSort===4?Math.abs(number):number};rows.sort((a,b)=>(overviewAmountAscending?value(a)-value(b):value(b)-value(a))||a.cells[0].textContent.localeCompare(b.cells[0].textContent,'zh-CN'));rows.forEach(row=>$('cars').append(row))}
 const overviewSortedRender=render;render=function(){overviewSortedRender();sortVehicleOverview()};
 
 
@@ -593,7 +938,7 @@ async function deleteEditedRecord(){
  }catch(error){$('error').textContent=error.message||'删除失败，请重试';}
  finally{save.disabled=false;button.disabled=false;button.textContent='删除';}
 }
-function editLedgerEntry(id){const entry=data.entries.find(e=>e.id===id);if(!entry)return;entryForm(entry.car_id);deletionContext={resource:'entries',id:entry.id,message:`确定删除这笔收支记录？\n${vehicleLabel(data.cars.find(car=>car.id===entry.car_id))} · ${entry.date} · ${entry.kind} · ${entry.category} · ¥${money(entry.cents)}\n确认后删除此记录。`};$('deleteRecord').hidden=false;$('title').textContent='编辑收支记录';const f=$('form').elements;$('fields').insertAdjacentHTML('beforeend',`<input type="hidden" name="id" value="${entry.id}">`);f.car_id.value=entry.car_id;f.date.value=entry.date;setKind(entry.kind);if(![...f.category.options].some(o=>o.value===entry.category)){const option=document.createElement('option');option.value=entry.category;option.textContent=entry.category+'（历史项目）';f.category.append(option)}f.category.value=entry.category;f.amount.value=(entry.cents/100).toFixed(2);f.party.value=entry.party||'';f.note.value=entry.note||'';for(const side of ['start','end']){const addressId=entry[side+'_address_id'];let address=data.addresses.find(a=>a.id===addressId);f[side+'_address'].value=address?addressLabel(address):'';f[side+'_address_detail'].value=entry[side+'_address_detail']||''}syncRoute();initialForm=formState()}
+function editLedgerEntry(id){const entry=data.entries.find(e=>e.id===id);if(!entry)return;entryForm(entry.car_id);deletionContext={resource:'entries',id:entry.id,message:`确定删除这笔收支记录？\n${vehicleLabel(data.cars.find(car=>car.id===entry.car_id))} · ${entry.date} · ${entry.kind} · ${entry.category} · ¥${money(entry.cents)}\n确认后删除此记录。`};$('deleteRecord').hidden=false;$('title').textContent='编辑收支记录';const f=$('form').elements;$('fields').insertAdjacentHTML('beforeend',`<input type="hidden" name="id" value="${entry.id}">`);f.car_id.value=entry.car_id;f.date.value=entry.date;setKind(entry.kind);if(![...f.category.options].some(o=>o.value===entry.category)){const option=document.createElement('option');option.value=entry.category;option.textContent=entry.category+'（历史项目）';f.category.append(option)}f.category.value=entry.category;f.amount.value=(entry.cents/100).toFixed(2);f.party.value=entry.party||'';f.brand.value=entry.brand||'';f.note.value=entry.note||'';for(const side of ['start','end']){const addressId=entry[side+'_address_id'];let address=data.addresses.find(a=>a.id===addressId);f[side+'_address'].value=address?addressLabel(address):'';f[side+'_address_detail'].value=entry[side+'_address_detail']||''}syncRoute();initialForm=formState()}
 let storageBusy=false,refreshLanSettings,lanTimer;
 function closeSiteSettings(){if(!storageBusy)$('settingsModal').close()}
 function closeAccount(){const modal=$('accountModal');if(modal.open)modal.close()}
@@ -630,9 +975,9 @@ $('settingsModal').addEventListener('close',()=>{
  lanTimer=undefined;
 });
 
-Object.assign(window,{openAccount,closeAccount,accountLogout,batchImport:()=>openExcelImport({service,esc,money,notify,load,bindCalendarInput,categories:data.categories}),deleteEditedRecord,customAddressForm,renderCustomAddressRows,renderVehicleDriverFilter,toggleAllVehicleDrivers,toggleVehicleDriver,openVehicleDriverFilter,driverForm,renderDrivers,renderDriverRows,removeDriver,addressForm,addressKey,addressLabel,allVehicleProjects,arrangeWorkspace,calendarToday,carForm,categoryForm,changeCalendarMonth,changeVehiclePageSize,chooseAddress,chooseCalendarDay,clearErrors,clearFilters,closeRegion,closeSiteSettings,collapseRegionTree,colorBalances,confirmRegion,downloadLedgerBackup,editLedgerEntry,entryForm,expandRegionNode,expandRegionNodeData,exportVehicleOverview,exportVehicleRows,field,filterCategories,formState,goVehiclePage,hideSuggestions,inlineAddress,installKindHeaderFilter,installLedgerCalendar,installLedgerVehicleFilter,installProjectHeaderFilter,installRouteHeaderFilters,installVehicleOverviewDates,ledgerScope,ledgerVehicleChoices,load,locateRegion,nativeStorage,notify,openForm,openKindFilter,openLedgerCalendar,openLedgerVehicleFilter,openProjectFilter,openRegion,openRegionTree,openRouteFilter,openSiteSettings,options,refreshAddresses,refreshTables,regionChildData,regionChildren,regionFetch,regionNodeMarkup,removeAddress,removeCategory,render,renderAddressRows,renderAddresses,renderAllLedger,renderCategories,renderKindFilters,renderLedgerCalendar,renderLedgerVehicleFilter,renderProjectFilters,renderRouteFilters,renderVehicleDetail,renderVehicleEntries,renderVehicleOverviewTotals,renderVehiclePagination,renderVehicleTotals,requestClose,restoreEntry,restoreLedgerBackup,routeFields,routeMatches,routeValue,searchRegions,sectionFields,selectRegion,setKind,setStorageBusy,showFieldError,sortVehicleOverview,suggest,swapRoute,syncCategories,syncRoute,toggleAllKinds,toggleAllLedgerVehicles,toggleAllRoutes,toggleKind,toggleLedgerVehicle,toggleOverviewAmountSort,toggleRoute,toggleVehicleDateSort,toggleVehicleLedgerSort,toggleVehicleProject,updateProjectHeader,updateVehicleDateHeader,vehicleLabel,vehicleOverviewEntries,vehicleOverviewFilteredRows,vehicleProjects,vehicleRouteChoices});
+Object.assign(window,{openAddressMerge,openAccount,closeAccount,accountLogout,batchImport:()=>openExcelImport({service,esc,money,notify,load,bindCalendarInput,categories:data.categories}),deleteEditedRecord,customAddressForm,renderCustomAddressRows,renderVehicleDriverFilter,toggleAllVehicleDrivers,toggleVehicleDriver,openVehicleDriverFilter,driverForm,renderDrivers,renderDriverRows,removeDriver,addressForm,addressKey,addressLabel,allVehicleProjects,arrangeWorkspace,calendarToday,carForm,categoryForm,changeCalendarMonth,changeVehiclePageSize,chooseAddress,chooseCalendarDay,clearErrors,clearFilters,closeRegion,closeSiteSettings,collapseRegionTree,colorBalances,confirmRegion,downloadLedgerBackup,editLedgerEntry,entryForm,expandRegionNode,expandRegionNodeData,exportVehicleOverview,exportVehicleRows,field,filterCategories,formState,goVehiclePage,hideSuggestions,inlineAddress,installKindHeaderFilter,installLedgerCalendar,installLedgerVehicleFilter,installProjectHeaderFilter,installRouteHeaderFilters,installVehicleOverviewDates,ledgerScope,ledgerVehicleChoices,load,locateRegion,nativeStorage,notify,openForm,openKindFilter,openLedgerCalendar,openLedgerVehicleFilter,openProjectFilter,openRegion,openRegionTree,openRouteFilter,openSiteSettings,options,refreshAddresses,refreshTables,regionChildData,regionChildren,regionFetch,regionNodeMarkup,removeAddress,removeCategory,render,renderAddressRows,renderAddresses,renderAllLedger,renderCategories,renderKindFilters,renderLedgerCalendar,renderLedgerVehicleFilter,renderProjectFilters,renderRouteFilters,renderVehicleDetail,renderVehicleEntries,renderVehicleOverviewTotals,renderVehiclePagination,renderVehicleTotals,requestClose,restoreEntry,restoreLedgerBackup,routeFields,routeMatches,routeValue,searchRegions,sectionFields,selectRegion,setKind,setStorageBusy,showFieldError,sortVehicleOverview,suggest,swapRoute,syncCategories,syncRoute,toggleAllKinds,toggleAllLedgerVehicles,toggleAllRoutes,toggleKind,toggleLedgerVehicle,toggleOverviewAmountSort,toggleRoute,toggleVehicleDateSort,toggleVehicleLedgerSort,toggleVehicleProject,updateProjectHeader,updateVehicleDateHeader,vehicleLabel,vehicleOverviewEntries,vehicleOverviewFilteredRows,vehicleProjects,vehicleRouteChoices});
 window.frontendDirty=()=>$("modal").open&&(formState()!==initialForm||Boolean(subview));
-window.frontendBusy=()=>storageBusy||$("save").disabled;
+window.frontendBusy=()=>ledgerBatchBusy||storageBusy||($("refreshAddressMerge")&&$("modal").open?$("refreshAddressMerge").disabled:$("save").disabled);
 mountRoute(location.hash);
 window.navigateWorkspace=navigateWorkspace;
 try{await refreshAccount()}catch(error){console.error('读取账号状态失败',error)}

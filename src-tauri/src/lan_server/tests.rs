@@ -71,10 +71,13 @@ fn native_operations_and_variant_mutation_paths_are_unroutable() {
         ("/api/drivers/delete", "drivers/delete"),
         ("/api/entries", "entries"),
         ("/api/entries/delete", "entries/delete"),
+        ("/api/entries/delete-batch", "entries/delete-batch"),
         ("/api/categories", "categories"),
         ("/api/categories/delete", "categories/delete"),
         ("/api/addresses", "addresses"),
         ("/api/addresses/delete", "addresses/delete"),
+        ("/api/addresses/merge-preview", "addresses/merge-preview"),
+        ("/api/addresses/merge", "addresses/merge"),
     ] {
         assert_eq!(classify(&Method::POST, path), Some(Action::Save(resource)));
         assert_eq!(classify(&Method::GET, path), None, "GET {path}");
@@ -278,7 +281,7 @@ async fn browser_data_omits_hidden_vehicle_fields_and_preserves_legacy_labels() 
     let (service, _directory) = ledger_service("test-password");
     let connection = rusqlite::Connection::open(&service.state.path).unwrap();
     connection.execute("INSERT INTO cars(name,vin,note) VALUES('Legacy vehicle','secret-old-vin','legacy note')", []).unwrap();
-    connection.execute("INSERT INTO cars(name,vin,plate,note) VALUES('Unused name','secret-vin','京A67890','note')", []).unwrap();
+    connection.execute("INSERT INTO cars(name,vin,plate,note,color) VALUES('Unused name','secret-vin','京A67890','note','blue')", []).unwrap();
     let guest = endpoint(false);
     let response = call(
         &service,
@@ -291,8 +294,8 @@ async fn browser_data_omits_hidden_vehicle_fields_and_preserves_legacy_labels() 
     assert_eq!(
         cars,
         json!([
-            {"id":2,"plate":"京A67890","note":"note"},
-            {"id":1,"plate":null,"name":"Legacy vehicle","note":"legacy note"}
+            {"id":2,"plate":"京A67890","note":"note","color":"blue"},
+            {"id":1,"plate":null,"name":"Legacy vehicle","note":"legacy note","color":""}
         ])
     );
     assert_eq!(
@@ -488,6 +491,12 @@ async fn https_cookie_enables_ledger_writes_and_http_ignores_the_same_cookie() {
     )
     .await;
     assert_eq!(blocked.status(), StatusCode::UNAUTHORIZED);
+    for path in ["/api/addresses/merge-preview", "/api/addresses/merge"] {
+        let blocked = call(&service, &guest, request(&guest, Method::POST, path, Some(token), json!({}))).await;
+        assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
+        let blocked = call(&service, &admin, request(&admin, Method::POST, path, None, json!({}))).await;
+        assert_eq!(blocked.status(), StatusCode::UNAUTHORIZED);
+    }
     let saved = call(
         &service,
         &admin,

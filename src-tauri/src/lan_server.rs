@@ -428,10 +428,13 @@ fn classify<'a>(method: &Method, path: &'a str) -> Option<Action<'a>> {
         (&Method::POST, "/api/drivers/delete") => Some(Action::Save("drivers/delete")),
         (&Method::POST, "/api/entries") => Some(Action::Save("entries")),
         (&Method::POST, "/api/entries/delete") => Some(Action::Save("entries/delete")),
+        (&Method::POST, "/api/entries/delete-batch") => Some(Action::Save("entries/delete-batch")),
         (&Method::POST, "/api/categories") => Some(Action::Save("categories")),
         (&Method::POST, "/api/categories/delete") => Some(Action::Save("categories/delete")),
         (&Method::POST, "/api/addresses") => Some(Action::Save("addresses")),
         (&Method::POST, "/api/addresses/delete") => Some(Action::Save("addresses/delete")),
+        (&Method::POST, "/api/addresses/merge-preview") => Some(Action::Save("addresses/merge-preview")),
+        (&Method::POST, "/api/addresses/merge") => Some(Action::Save("addresses/merge")),
         _ => None,
     }
 }
@@ -534,7 +537,7 @@ async fn respond(
 fn browser_data(mut data: Value) -> Value {
     let mut browser = serde_json::Map::new();
     for (table, fields) in [
-        ("cars", &["id", "plate", "name", "note"][..]),
+        ("cars", &["id", "plate", "name", "note", "color"][..]),
         ("drivers", &["id", "name", "phone", "note", "car_ids"]),
         (
             "categories",
@@ -542,7 +545,7 @@ fn browser_data(mut data: Value) -> Value {
         ),
         (
             "addresses",
-            &["id", "name", "detail", "active", "region_code"],
+            &["id", "name", "detail", "active", "region_code", "aliases"],
         ),
         (
             "entries",

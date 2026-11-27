@@ -1,3 +1,4 @@
+import { sortFilterOptions, compareFilterLabels } from '../filter-option-sort.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -19,6 +20,8 @@ async function openImport(t, { kind = '收入', defaultCategory = '运费', requ
   t.after(() => dom.window.close());
   const calls = [];
   const notifications = [];
+  dom.window.sortFilterOptions = sortFilterOptions;
+  dom.window.compareFilterLabels = compareFilterLabels;
   dom.window.createTextMatcher = createTextMatcher;
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () {
@@ -304,4 +307,21 @@ test('sheet search filters display while global selection also includes hidden s
   search.dispatchEvent(new Event('input', { bubbles: true }));
   assert.deepEqual(visible(), []);
   assert.equal(form.querySelector('[data-no-sheets]').hidden, false);
+});
+
+test('preview plate sort changes display order without altering checked plates',async t=>{
+ const {dialog,preview}=await openImport(t);
+ const entry=preview.entries[0];
+ preview.entries=[{...entry,plate:'沪A2'},{...entry,plate:'沪A10'}];
+ await dialog.querySelector('[data-check]').onclick();
+ const panel=dialog.querySelector('#importPlateFilter');
+ const plates=()=>[...dialog.querySelectorAll('[data-preview] tbody [data-label="车牌"]')].map(cell=>cell.textContent);
+ const selected=()=>[...panel.querySelectorAll('input:checked')].map(box=>box.value).sort();
+ const before=selected();
+ assert.deepEqual(plates(),['沪A2','沪A10']);
+ panel.querySelector('.filter-option-sort').click();
+ assert.deepEqual(plates(),['沪A10','沪A2']);
+ assert.deepEqual(selected(),before);
+ panel.querySelector('.filter-option-sort').click();
+ assert.deepEqual(plates(),['沪A2','沪A10']);
 });

@@ -1,3 +1,4 @@
+import { sortFilterOptions, compareFilterLabels } from '../filter-option-sort.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync,readFileSync} from 'node:fs';
@@ -82,6 +83,8 @@ async function start(url,{native=false,authenticated=false}={}){
  w.getVersion=async()=>'0.1.8';
  w.createUpdater=()=>({checkNow:async()=>{},dispose(){}});
  w.createTextMatcher=createTextMatcher;
+ w.sortFilterOptions=sortFilterOptions;
+ w.compareFilterLabels=compareFilterLabels;
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
  w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'))};
  const matches=w.Element.prototype.matches;

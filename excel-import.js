@@ -1,3 +1,4 @@
+import { sortFilterOptions, compareFilterLabels } from './filter-option-sort.js';
 import { createTextMatcher } from './text-search.js';
 
 function installPlateFilter(root, entries, showSheet, esc, money) {
@@ -9,15 +10,22 @@ function installPlateFilter(root, entries, showSheet, esc, money) {
   const plates = [...new Set(entries.map(entry => entry.plate))];
   const selected = new Set(plates);
 
+  let descending=null;
   function renderRows() {
     const all = selected.size === plates.length;
     for (const button of buttons) {
       button.textContent = all ? '车牌 ▾' : `车牌（${selected.size}） ▾`;
       button.classList.toggle('is-filtered', !all);
     }
-    body.innerHTML = entries.filter(entry => selected.has(entry.plate)).map(entry =>
-      `<tr>${showSheet ? `<td data-label="子表">${esc(entry.sheet)}</td>` : ''}<td data-label="车牌">${esc(entry.plate)}</td><td data-label="起点 → 终点">${esc(entry.start)} → ${esc(entry.end)}</td><td data-label="金额">${money(entry.cents)}</td><td data-label="备注">${esc(entry.note || '')}</td></tr>`
-    ).join('') || `<tr><td colspan="${showSheet ? 5 : 4}" class="empty">没有符合筛选条件的明细。</td></tr>`;
+    const visible = entries.filter(entry => selected.has(entry.plate));
+    if(descending!==null){
+      visible.sort((a,b)=>(descending?-1:1)*compareFilterLabels(a.plate,b.plate));
+      buttons.forEach(button=>{button.dataset.filterTableSort=descending?'↓':'↑'});
+      buttons.forEach(button=>button.closest('th')?.setAttribute('aria-sort',descending?'descending':'ascending'));
+    }
+    body.innerHTML = visible.map(entry =>
+      `<tr>${showSheet ? `<td data-label="子表">${esc(entry.sheet)}</td>` : ''}<td data-label="车牌">${esc(entry.plate)}</td><td data-label="起点 → 终点">${esc(entry.start)} → ${esc(entry.end)}</td><td data-label="金额">${money(entry.cents)}</td><td data-label="往来方">${esc(entry.party || '')}</td><td data-label="品牌">${esc(entry.brand || '')}</td><td data-label="备注">${esc(entry.note || '')}</td></tr>`
+    ).join('') || `<tr><td colspan="${showSheet ? 7 : 6}" class="empty">没有符合筛选条件的明细。</td></tr>`;
   }
 
   function renderChoices() {
@@ -27,6 +35,7 @@ function installPlateFilter(root, entries, showSheet, esc, money) {
     choices.innerHTML = `<button type="button" class="project-all ${all ? 'selected' : ''}" aria-pressed="${all}">全部车辆（${selected.size}）</button>`
       + matches.map(plate => `<label class="project-chip"><input type="checkbox" value="${esc(plate)}" ${selected.has(plate) ? 'checked' : ''}><span>${esc(plate)}</span></label>`).join('')
       + (matches.length ? '' : '<p class="help">没有匹配车辆</p>');
+    sortFilterOptions(choices, reverse=>{descending=reverse;renderRows()});
   }
 
   search.oninput = renderChoices;
@@ -336,7 +345,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
         return;
       }
       preview = result;
-      const { entries, errors, new_plates, new_addresses } = result;
+      const { entries, errors, warnings = [], new_plates, new_addresses } = result;
       const showSheet = !!sources || result.sheets.length > 1;
       const projectTotals = new Map();
       if (sources) for (const sheet of result.sheets) {
@@ -366,16 +375,18 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
           <div class="scroll"><table><thead><tr>
             ${showSheet ? '<th>子表</th>' : ''}
             <th><button type="button" class="project-header-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="importPlateFilter">车牌 ▾</button></th>
-            <th>起点 → 终点</th><th>金额</th><th>备注</th>
+            <th>起点 → 终点</th><th>金额</th><th>往来方</th><th>品牌</th><th>备注</th>
           </tr></thead><tbody></tbody></table></div>` : ''}`;
       if (entries.length) {
         const displayEntries = sources ? entries.map(entry => ({...entry, sheet: `${entry.sheet} · ${entry.category}`})) : entries;
         installPlateFilter(previewNode, displayEntries, showSheet, esc, money);
       }
       submit.disabled = !entries.length || !!errors.length;
-      if (errors.length) {
-        problems.setErrors(errors);
-        errorNode.textContent = `有 ${errors.length} 个导入问题，核对后请重新预览。`;
+      if (errors.length || warnings.length) {
+        problems.setErrors([...errors, ...warnings]);
+        errorNode.textContent = errors.length
+          ? `有 ${errors.length} 个导入问题，核对后请重新预览。`
+          : `已跳过 ${warnings.length} 行，请查看原因并核对有效明细。`;
         showErrors.hidden = false;
       } else if (!entries.length) {
         errorNode.textContent = result.duplicates ? '所选明细均已入账。' : '所选子表没有可入账明细。';

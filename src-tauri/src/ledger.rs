@@ -4,6 +4,109 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 type Result<T> = std::result::Result<T, String>;
+
+struct MergeAddress {
+    id: i64,
+    name: String,
+    detail: String,
+    aliases: Vec<String>,
+    custom: bool,
+}
+
+#[derive(serde::Serialize)]
+struct AddressMergePair {
+    source_id: i64,
+    target_id: i64,
+    source_name: String,
+    target_name: String,
+    aliases: Vec<String>,
+    detail: String,
+    blocked: Option<String>,
+}
+
+fn address_merge_pairs(c: &Connection) -> Result<Vec<AddressMergePair>> {
+    let mut query = c.prepare(
+        "SELECT id,name,detail,aliases,region_code IS NULL FROM addresses WHERE active=1 ORDER BY name,id"
+    ).map_err(err)?;
+    let mut rows = query.query([]).map_err(err)?;
+    let mut addresses = Vec::new();
+    while let Some(row) = rows.next().map_err(err)? {
+        let aliases: String = row.get(3).map_err(err)?;
+        addresses.push(MergeAddress {
+            id: row.get(0).map_err(err)?,
+            name: row.get(1).map_err(err)?,
+            detail: row.get(2).map_err(err)?,
+            aliases: serde_json::from_str(&aliases).map_err(err)?,
+            custom: row.get(4).map_err(err)?,
+        });
+    }
+    let mut pairs = Vec::new();
+    for target in addresses.iter().filter(|address| address.custom) {
+        let Some(short) = target.name.strip_suffix('市').filter(|name| !name.is_empty()) else { continue };
+        let Some(source) = addresses.iter().find(|address| address.custom && address.name == short) else { continue };
+        let mut names = std::collections::HashSet::from([target.name.trim().to_ascii_lowercase()]);
+        let aliases: Vec<String> = target.aliases.iter().chain(std::iter::once(&source.name))
+            .chain(&source.aliases).map(|name| name.trim())
+            .filter(|name| !name.is_empty() && names.insert(name.to_ascii_lowercase()))
+            .map(str::to_owned).collect();
+        let blocked = if !target.detail.trim().is_empty() && !source.detail.trim().is_empty()
+            && target.detail.trim() != source.detail.trim() {
+            Some("详细地址不同".into())
+        } else {
+            addresses.iter().filter(|address| address.id != source.id && address.id != target.id)
+                .find_map(|address| {
+                    std::iter::once(&address.name).chain(&address.aliases)
+                        .find(|name| names.contains(&name.trim().to_ascii_lowercase()))
+                        .map(|name| format!("名称或别名「{name}」与地址「{}」冲突", address.name))
+                })
+        };
+        pairs.push(AddressMergePair {
+            source_id: source.id,
+            target_id: target.id,
+            source_name: source.name.clone(),
+            target_name: target.name.clone(),
+            aliases,
+            detail: if target.detail.trim().is_empty() { source.detail.clone() } else { target.detail.clone() },
+            blocked,
+        });
+    }
+    Ok(pairs)
+}
+
+fn merge_duplicate_addresses(c: &Connection, data: &Value) -> Result<Value> {
+    let selected = data["pairs"].as_array().filter(|pairs| !pairs.is_empty())
+        .ok_or("请选择要合并的地址")?;
+    let tx = c.unchecked_transaction().map_err(err)?;
+    let candidates = address_merge_pairs(&tx)?;
+    let mut used = std::collections::HashSet::new();
+    let mut merges = Vec::new();
+    for pair in selected {
+        let source = pair["source_id"].as_i64().ok_or("无效的待合并地址")?;
+        let target = pair["target_id"].as_i64().ok_or("无效的保留地址")?;
+        let candidate = candidates.iter().find(|candidate| candidate.source_id == source && candidate.target_id == target)
+            .ok_or("合并候选已变化，请刷新后重试")?;
+        if let Some(reason) = &candidate.blocked {
+            return Err(format!("「{}」无法合并：{reason}，请刷新候选", candidate.source_name));
+        }
+        if !used.insert(source) || !used.insert(target) {
+            return Err("同一地址不能参与多组，请调整勾选".into());
+        }
+        merges.push(candidate);
+    }
+    for pair in merges {
+        let aliases = serde_json::to_string(&pair.aliases).map_err(err)?;
+        tx.execute("UPDATE addresses SET detail=?,aliases=? WHERE id=?",
+            params![pair.detail, aliases, pair.target_id]).map_err(err)?;
+        tx.execute("UPDATE addresses SET active=0 WHERE id=?", [pair.source_id]).map_err(err)?;
+        for column in ["start_address_id", "end_address_id"] {
+            tx.execute(&format!("UPDATE entries SET {column}=? WHERE {column}=?"),
+                params![pair.target_id, pair.source_id]).map_err(err)?;
+        }
+    }
+    tx.commit().map_err(err)?;
+    Ok(json!({"merged":selected.len()}))
+}
+
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
@@ -119,8 +222,11 @@ impl Ledger {
                 ("entries", "end_address"),
                 ("entries", "start_address_detail"),
                 ("entries", "end_address_detail"),
+                ("entries", "brand"),
                 ("categories", "requires_route"),
                 ("addresses", "region_code"),
+                ("addresses", "aliases"),
+                ("cars", "color"),
             ]
             .iter()
             .any(|(t, n)| {
@@ -146,6 +252,7 @@ impl Ledger {
             let conn = &tx;
             conn.execute_batch(r#"CREATE TABLE IF NOT EXISTS cars(id INTEGER PRIMARY KEY,name TEXT NOT NULL,plate TEXT,vin TEXT,note TEXT); CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY,car_id INTEGER NOT NULL REFERENCES cars(id),date TEXT NOT NULL,kind TEXT NOT NULL,category TEXT NOT NULL,cents INTEGER NOT NULL,party TEXT,note TEXT); CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,UNIQUE(kind,name));CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY);CREATE TABLE IF NOT EXISTS addresses(id INTEGER PRIMARY KEY,name TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);CREATE UNIQUE INDEX IF NOT EXISTS addresses_active_name ON addresses(name) WHERE active=1;"#).map_err(err)?;
             conn.execute_batch("CREATE TABLE IF NOT EXISTS drivers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,phone TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS driver_cars(driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,car_id INTEGER NOT NULL REFERENCES cars(id),PRIMARY KEY(driver_id,car_id));").map_err(err)?;
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS excel_freight_sheet_sources(file_stem TEXT NOT NULL, sheet TEXT NOT NULL, fingerprint TEXT NOT NULL, entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, PRIMARY KEY(file_stem,sheet,entry_id));").map_err(err)?;
             conn.execute_batch("CREATE TABLE IF NOT EXISTS excel_import_sources(vin TEXT NOT NULL, order_number TEXT NOT NULL, fingerprint TEXT NOT NULL, entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, PRIMARY KEY(vin,order_number)); CREATE INDEX IF NOT EXISTS excel_import_sources_entry ON excel_import_sources(entry_id);").map_err(err)?;
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS excel_pickup_sources(
@@ -192,6 +299,9 @@ impl Ledger {
                 ("entries", "end_address", "TEXT"),
                 ("entries", "start_address_detail", "TEXT NOT NULL DEFAULT ''"),
                 ("entries", "end_address_detail", "TEXT NOT NULL DEFAULT ''"),
+                ("entries", "brand", "TEXT NOT NULL DEFAULT ''"),
+                ("addresses", "aliases", "TEXT NOT NULL DEFAULT '[]'"),
+                ("cars", "color", "TEXT NOT NULL DEFAULT ''"),
             ] {
                 if rows(&conn, &format!("PRAGMA table_info({table})"))?
                     .iter()
@@ -245,6 +355,12 @@ impl Ledger {
                 &self.conn,
                 &format!("SELECT * FROM {t} ORDER BY id DESC")
             )?);
+        }
+        if let Some(addresses) = o["addresses"].as_array_mut() {
+            for address in addresses {
+                address["aliases"] = serde_json::from_str(address["aliases"].as_str().unwrap_or("[]"))
+                    .map_err(err)?;
+            }
         }
         let mut drivers = rows(&self.conn, "SELECT * FROM drivers ORDER BY id DESC")?;
         let links = rows(&self.conn, "SELECT driver_id,car_id FROM driver_cars ORDER BY car_id")?;
@@ -361,6 +477,11 @@ impl Ledger {
                         }
                     }
                 }
+                let color = d.get("color").map(|value| {
+                    value.as_str()
+                        .filter(|color| matches!(*color, "" | "red" | "orange" | "yellow" | "green" | "blue" | "purple"))
+                        .ok_or("无效的车辆颜色")
+                }).transpose()?;
                 let old = if let Some(car_id) = i {
                     Some(tx.query_row("SELECT name,vin FROM cars WHERE id=?", [car_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?)))
                         .optional().map_err(err)?.ok_or("车辆不存在，请刷新后重试")?)
@@ -368,10 +489,10 @@ impl Ledger {
                 let name = if d.get("name").is_none() { old.as_ref().map(|(name,_)| name.clone()).unwrap_or_default() } else { text(&d,"name") };
                 let vin = if d.get("vin").is_none() { old.as_ref().and_then(|(_,vin)| vin.clone()).unwrap_or_default() } else { text(&d,"vin") };
                 let car_id = if let Some(car_id) = i {
-                    tx.execute("UPDATE cars SET name=?,plate=?,vin=?,note=? WHERE id=?", params![name,plate,vin,text(&d,"note"),car_id]).map_err(err)?;
+                    tx.execute("UPDATE cars SET name=?,plate=?,vin=?,note=?,color=COALESCE(?,color) WHERE id=?", params![name,plate,vin,text(&d,"note"),color,car_id]).map_err(err)?;
                     car_id
                 } else {
-                    tx.execute("INSERT INTO cars(name,plate,vin,note) VALUES(?,?,?,?)", params![name,plate,vin,text(&d,"note")]).map_err(err)?;
+                    tx.execute("INSERT INTO cars(name,plate,vin,note,color) VALUES(?,?,?,?,?)", params![name,plate,vin,text(&d,"note"),color.unwrap_or_default()]).map_err(err)?;
                     tx.last_insert_rowid()
                 };
                 if let Some(ids) = driver_ids {
@@ -411,6 +532,12 @@ impl Ledger {
                     .unwrap_or(old.unwrap_or(0));
                 if let Some(i)=i{c.execute("UPDATE categories SET kind=?,name=?,requires_route=? WHERE id=?",params![k,n,route,i])}else{c.execute("INSERT INTO categories(kind,name,requires_route) VALUES(?,?,?) ON CONFLICT(kind,name) DO UPDATE SET active=1,requires_route=excluded.requires_route",params![k,n,route])}.map_err(err)?;
             }
+            "addresses/merge-preview" => {
+                return Ok(json!({"pairs":address_merge_pairs(c)?}));
+            }
+            "addresses/merge" => {
+                return merge_duplicate_addresses(c, &d);
+            }
             "addresses/delete" => {
                 if c.execute("UPDATE addresses SET active=0 WHERE id=? AND active=1", [i])
                     .map_err(err)?
@@ -436,26 +563,63 @@ impl Ledger {
                 if n.is_empty() {
                     return Err("请填写地址名称".into());
                 }
-                if c.query_row(
-                    "SELECT 1 FROM addresses WHERE active=1 AND name=? AND id!=?",
-                    params![n, i.unwrap_or(0)],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(err)?
-                .is_some()
-                {
-                    return Err("地址名称已存在".into());
+                let existing: Option<String> = c.query_row(
+                    "SELECT aliases FROM addresses WHERE id=? AND active=1",
+                    [i], |row| row.get(0),
+                ).optional().map_err(err)?;
+                let mut aliases: Vec<String> = match d.get("aliases") {
+                    Some(value) => serde_json::from_value(value.clone()).map_err(|_| "别名必须是文字列表")?,
+                    None => serde_json::from_str(existing.as_deref().unwrap_or("[]")).map_err(err)?,
+                };
+                if code.is_some() && !aliases.is_empty() {
+                    return Err("仅自定义地址支持别名".into());
                 }
+                let mut seen = std::collections::HashSet::new();
+                seen.insert(n.to_ascii_lowercase());
+                aliases = aliases.into_iter().map(|alias| alias.trim().to_owned())
+                    .filter(|alias| !alias.is_empty() && seen.insert(alias.to_ascii_lowercase()))
+                    .collect();
+                let mut conflict = c.prepare_cached(
+                    "SELECT name FROM addresses WHERE active=1 AND id!=? AND
+                     (trim(name)=? COLLATE NOCASE OR EXISTS(SELECT 1 FROM json_each(aliases)
+                      WHERE trim(value)=? COLLATE NOCASE)) LIMIT 1"
+                ).map_err(err)?;
+                for (label, value) in std::iter::once(("地址名称", &n))
+                    .chain(aliases.iter().map(|alias| ("别名", alias))) {
+                    if let Some(other) = conflict.query_row(params![i.unwrap_or(0), value, value],
+                        |row| row.get::<_, String>(0)).optional().map_err(err)? {
+                        if label == "地址名称" && other == *value { return Err("地址名称已存在".into()); }
+                        return Err(format!("{label}「{value}」与地址「{other}」的名称或别名冲突"));
+                    }
+                }
+                let aliases = serde_json::to_string(&aliases).map_err(err)?;
                 if let Some(i) = i {
-                    if c.execute("UPDATE addresses SET name=?,detail=?,region_code=? WHERE id=? AND active=1",params![n,detail,code,i]).map_err(err)?==0{return Err("地址已删除，请刷新".into())}
+                    if c.execute("UPDATE addresses SET name=?,detail=?,region_code=?,aliases=? WHERE id=? AND active=1",
+                        params![n,detail,code,aliases,i]).map_err(err)? == 0 {
+                        return Err("地址已删除，请刷新".into());
+                    }
                 } else {
-                    c.execute(
-                        "INSERT INTO addresses(name,detail,region_code) VALUES(?,?,?)",
-                        params![n, detail, code],
-                    )
-                    .map_err(err)?;
+                    c.execute("INSERT INTO addresses(name,detail,region_code,aliases) VALUES(?,?,?,?)",
+                        params![n,detail,code,aliases]).map_err(err)?;
                 }
+            }
+            "entries/delete-batch" => {
+                let values = d["ids"].as_array().filter(|ids| !ids.is_empty())
+                    .ok_or("请选择收支记录")?;
+                let mut ids = std::collections::HashSet::new();
+                for value in values {
+                    let id = value.as_i64().filter(|id| *id > 0).ok_or("无效的收支记录编号")?;
+                    if !ids.insert(id) {
+                        return Err("收支记录编号重复".into());
+                    }
+                }
+                let tx = c.unchecked_transaction().map_err(err)?;
+                for id in ids {
+                    if tx.execute("DELETE FROM entries WHERE id=?", [id]).map_err(err)? != 1 {
+                        return Err("部分收支记录已删除或不存在，请刷新后重试".into());
+                    }
+                }
+                tx.commit().map_err(err)?;
             }
             "entries/delete" => {
                 let entry_id = i.filter(|id| *id > 0).ok_or("请选择收支记录")?;
@@ -553,11 +717,12 @@ impl Ledger {
                     return Err("车辆不存在，请刷新".into());
                 }
                 let party = text(&d, "party");
+                let brand = text(&d, "brand");
                 let note = text(&d, "note");
                 if let Some(i) = i {
-                    c.execute("UPDATE entries SET car_id=?,date=?,kind=?,category=?,cents=?,party=?,note=?,start_address_id=?,end_address_id=?,start_address=?,end_address=?,start_address_detail=?,end_address_detail=? WHERE id=?",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1],start_detail,end_detail,i]).map_err(err)?;
+                    c.execute("UPDATE entries SET car_id=?,date=?,kind=?,category=?,cents=?,party=?,note=?,start_address_id=?,end_address_id=?,start_address=?,end_address=?,start_address_detail=?,end_address_detail=?,brand=? WHERE id=?",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1],start_detail,end_detail,brand,i]).map_err(err)?;
                 } else {
-                    c.execute("INSERT INTO entries(car_id,date,kind,category,cents,party,note,start_address_id,end_address_id,start_address,end_address,start_address_detail,end_address_detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1],start_detail,end_detail]).map_err(err)?;
+                    c.execute("INSERT INTO entries(car_id,date,kind,category,cents,party,note,start_address_id,end_address_id,start_address,end_address,start_address_detail,end_address_detail,brand) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",params![car,date,k,cat,amount,party,note,start,end,snapshots[0],snapshots[1],start_detail,end_detail,brand]).map_err(err)?;
                 }
             }
             _ => return Err("不存在".into()),
@@ -713,6 +878,23 @@ mod regression_tests {
         assert_eq!(ledger.data().unwrap()["entries"][0]["id"],2);
         assert!(ledger.save("entries/delete", json!({"id":1})).is_err());
         assert_eq!(ledger.data().unwrap()["cars"].as_array().unwrap().len(),1);
+    }
+    #[test]
+    fn batch_deletion_is_atomic_and_only_removes_selected_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path().join("db")).unwrap();
+        ledger.save("cars", json!({"plate":"A"})).unwrap();
+        for _ in 0..3 {
+            ledger.save("entries", json!({"car_id":1,"date":"2026-11-17","kind":"支出","category":"油费","amount":"1"})).unwrap();
+        }
+        for ids in [json!([]), json!([1, "2"]), json!([1, 1]), json!([1, 999])] {
+            assert!(ledger.save("entries/delete-batch", json!({"ids":ids})).is_err());
+            assert_eq!(ledger.data().unwrap()["entries"].as_array().unwrap().len(), 3);
+        }
+        ledger.save("entries/delete-batch", json!({"ids":[1,3]})).unwrap();
+        let data = ledger.data().unwrap();
+        assert_eq!(data["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(data["entries"][0]["id"], 2);
     }
     #[test]
     fn vehicle_driver_assignment_is_atomic_and_driver_edits_preserve_links() {
@@ -908,4 +1090,19 @@ mod migration_tests {
             data["entries"][0]["end_address"]
         );
     }
+}
+
+#[test]
+fn vehicle_color_defaults_to_none_and_validates_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("test.db")).unwrap();
+    ledger.save("cars", json!({"plate":"A"})).unwrap();
+    assert_eq!(ledger.data().unwrap()["cars"][0]["color"], "");
+    ledger.save("cars",json!({"id":1,"plate":"A","color":"purple"})).unwrap();
+    assert_eq!(Ledger::open(dir.path().join("test.db")).unwrap().data().unwrap()["cars"][0]["color"], "purple");
+    assert!(ledger.save("cars",json!({"id":1,"plate":"A","color":"invalid"})).is_err());
+    ledger.save("cars",json!({"id":1,"plate":"A"})).unwrap();
+    assert_eq!(ledger.data().unwrap()["cars"][0]["color"], "purple");
+    ledger.save("cars",json!({"id":1,"plate":"A","color":""})).unwrap();
+    assert_eq!(ledger.data().unwrap()["cars"][0]["color"], "");
 }

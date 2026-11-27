@@ -1,6 +1,6 @@
 use super::{
     err, field, fingerprint, read_table, ExcelImporter, Group, ImportRun, LegacyDetail,
-    PreparedSheet, RawDetail, Result, SheetImport, Workbook,
+    PreparedSheet, RawDetail, Result, SheetImport, WholeSheetRun, Workbook,
 };
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::json;
@@ -16,6 +16,74 @@ const HEADERS: &[&str] = &[
 ];
 
 pub(super) struct FreightImporter;
+
+pub(super) static MODERN: ModernFreightImporter = ModernFreightImporter;
+pub(super) struct ModernFreightImporter;
+
+const MODERN_HEADERS: &[&str] = &[
+    "装车地城市", "目的地城市", "运费收入", "车牌号", "客户名称", "品牌",
+];
+
+impl ExcelImporter for ModernFreightImporter {
+    fn kind(&self) -> &'static str {
+        "收入"
+    }
+
+    fn headers(&self) -> &'static [&'static str] {
+        MODERN_HEADERS
+    }
+
+    fn requires_party(&self) -> bool {
+        false
+    }
+
+    fn start(&self, file_stem: &str) -> Box<dyn ImportRun> {
+        Box::new(WholeSheetRun {
+            file_stem: file_stem.to_owned(),
+            source_table: "excel_freight_sheet_sources",
+            prepare: prepare_modern_freight,
+        })
+    }
+}
+
+fn prepare_modern_freight(
+    workbook: &mut Workbook,
+    sheet: &str,
+    _errors: &mut Vec<String>,
+) -> Result<PreparedSheet> {
+    let (range, columns) = read_table(workbook, sheet, MODERN_HEADERS)?;
+    let first_row = range.start().unwrap().0 as usize;
+    let mut count = 0;
+    let mut rows = Vec::new();
+    let mut warnings = Vec::new();
+    for (index, row) in range.rows().enumerate().skip(1) {
+        if row.iter().all(|value| super::cell(value).is_empty()) {
+            continue;
+        }
+        count += 1;
+        let line = first_row + index + 1;
+        let raw = RawDetail::read(row, &columns);
+        let party = field(row, columns[4]);
+        let result = if !raw.has_route_and_plate() {
+            Err("车牌号、装车地城市或目的地城市缺失".into())
+        } else if party.is_empty() {
+            Err("客户名称缺失".into())
+        } else {
+            raw.into_detail(line)
+        };
+        match result {
+            Ok(mut detail) => {
+                detail.brand = field(row, columns[5]);
+                detail.party = Some(party);
+                rows.push(detail);
+            }
+            Err(error) => warnings.push(format!("「{sheet}」第 {line} 行：{error}")),
+        }
+    }
+    let mut prepared = PreparedSheet::new(fingerprint(&rows)?, count, rows);
+    prepared.warnings = warnings;
+    Ok(prepared)
+}
 
 impl ExcelImporter for FreightImporter {
     fn kind(&self) -> &'static str {

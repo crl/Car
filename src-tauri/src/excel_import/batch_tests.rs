@@ -887,6 +887,8 @@ fn a_registered_handler_can_inspect_preview_and_commit_its_own_format() {
                         merged_rows: Vec::new(),
                         row: first_row + index + 1,
                         excluded: false,
+                        brand: String::new(),
+                        party: None,
                         start: String::new(),
                         end: String::new(),
                         plate: field(row, columns[1]).to_uppercase(),
@@ -1140,4 +1142,153 @@ fn existing_ledgers_get_pickup_expense_once_and_keep_it_disabled() {
         .excel_import_info(&folder.path().join("本月_提车费.xlsx"))
         .unwrap_err();
     assert!(error.contains("『提车费』不存在或已停用"));
+}
+
+#[test]
+fn modern_freight_groups_by_brand_and_customer_and_skips_invalid_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("test.db")).unwrap();
+    let path = dir.path().join("测试_运费.xlsx");
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet().set_name("明细").unwrap();
+    sheet.write_row(0, 0, ["品牌","客户名称","车架号","运费收入","目的地城市","车牌号","装车地城市"]).unwrap();
+    for (index, row) in [
+        ["甲品牌","客户甲","VIN1","100","上海","沪A12345","南京"],
+        ["甲品牌","客户甲","VIN1","100","上海","沪A12345","南京"],
+        ["乙品牌","客户甲","VIN1","50","上海","沪A12345","南京"],
+        ["甲品牌","客户乙","VIN1","30","上海","沪A12345","南京"],
+        ["","客户甲","VIN2","20","上海","沪A12345","南京"],
+        ["甲品牌","客户甲","VIN3","50","上海","","南京"],
+        ["甲品牌","客户甲","VIN4","不详","上海","沪A12345","南京"],
+        ["甲品牌","","VIN5","50","上海","沪A12345","南京"],
+    ].into_iter().enumerate() {
+        sheet.write_row(index as u32 + 1, 0, row).unwrap();
+    }
+    workbook.save(&path).unwrap();
+    let request = || serde_json::from_value(json!({
+        "sheets":["明细"], "date":"2026-10-31", "kind":"收入","category":"运费"
+    })).unwrap();
+    assert_eq!(ledger.excel_import_info(&path).unwrap()["requires_party"], false);
+    let preview = ledger.import_excel(&path, request(), None).unwrap();
+    assert_eq!(preview["errors"], json!([]));
+    assert_eq!(preview["warnings"].as_array().unwrap().len(), 3);
+    assert_eq!(preview["total"], 30000);
+    assert_eq!(preview["entries"].as_array().unwrap().len(), 4);
+    assert_eq!(preview["entries"][0]["sources"], 2);
+    assert_eq!(preview["entries"][0]["brand"], "甲品牌");
+    ledger.import_excel(&path, request(), Some(preview)).unwrap();
+    let data=ledger.data().unwrap();
+    let entries=data["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 4);
+    assert!(entries.iter().all(|e| e["date"] == "2026-10-31"));
+    assert!(entries.iter().any(|e| e["party"] == "客户乙" && e["brand"] == "甲品牌"));
+    let duplicate=ledger.import_excel(&path, request(), None).unwrap();
+    assert_eq!(duplicate["entries"], json!([]));
+    assert!(ledger.import_excel(&path, request(), Some(duplicate)).is_err());
+}
+
+#[test]
+#[ignore = "set CAR_FREIGHT_SAMPLE to a local modern workbook"]
+fn modern_freight_workbook_smoke() {
+    let path = std::path::PathBuf::from(std::env::var_os("CAR_FREIGHT_SAMPLE").unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("sample.db")).unwrap();
+    let info = ledger.excel_import_info(&path).unwrap();
+    assert_eq!(info["requires_party"], false);
+    let request = || serde_json::from_value(json!({
+        "sheets":info["sheets"], "date":"2026-10-31", "kind":"收入","category":"运费"
+    })).unwrap();
+    let preview = ledger.import_excel(&path, request(), None).unwrap();
+    assert_eq!(preview["errors"], json!([]));
+    let rows=preview["entries"].as_array().unwrap();
+    let total: i64=rows.iter().map(|row| row["cents"].as_i64().unwrap()).sum();
+    assert_eq!(preview["total"], total);
+    assert_eq!(preview["source_total"], total);
+    assert!(rows.iter().all(|row| !row["party"].as_str().unwrap().is_empty()));
+    println!("details={}, warnings={}, groups={}, cents={}",preview["details"],preview["warnings"].as_array().unwrap().len(),rows.len(),total);
+    ledger.import_excel(&path, request(), Some(preview)).unwrap();
+    let data=ledger.data().unwrap();
+    assert!(data["entries"].as_array().unwrap().iter().all(|entry| entry["date"]=="2026-10-31"));
+}
+
+#[test]
+fn address_aliases_are_unique_and_excel_reuses_the_formal_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("test.db")).unwrap();
+    ledger.save("addresses", json!({"name":"南京","aliases":[" NJ ", "nj", "", "金陵"]})).unwrap();
+    ledger.save("addresses", json!({"id":1,"name":"南京","detail":"保留别名"})).unwrap();
+    assert_eq!(ledger.data().unwrap()["addresses"][0]["aliases"], json!(["NJ","金陵"]));
+    assert!(ledger.save("addresses", json!({"name":"Nj"})).is_err());
+    assert!(ledger.save("addresses", json!({"name":"苏州","aliases":["南京"]})).is_err());
+    assert!(ledger.save("addresses", json!({"name":"苏州","aliases":["金陵"]})).is_err());
+    let path = dir.path().join("别名_运费.xlsx");
+    let mut book = Workbook::new();
+    let sheet = book.add_worksheet().set_name("明细").unwrap();
+    sheet.write_row(0, 0, ["装车地城市","目的地城市","运费收入","车牌号","客户名称","品牌"]).unwrap();
+    sheet.write_row(1, 0, ["南京","上海","50","沪A12345","客户","品牌"]).unwrap();
+    sheet.write_row(2, 0, [" nj ","上海","30","沪A12345","客户","品牌"]).unwrap();
+    book.save(&path).unwrap();
+    let request = || options(&["明细"], "收入", "运费");
+    let preview = ledger.import_excel(&path, request(), None).unwrap();
+    assert_eq!(preview["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(preview["entries"][0]["start"], "南京");
+    assert_eq!(preview["total"], 8000);
+    assert_eq!(preview["new_addresses"], json!(["上海"]));
+    ledger.import_excel(&path, request(), Some(preview)).unwrap();
+    let data = ledger.data().unwrap();
+    assert_eq!(data["entries"][0]["start_address"], "南京");
+    assert_eq!(data["addresses"].as_array().unwrap().len(), 2);
+    ledger.save("addresses", json!({"id":1,"name":"南京","aliases":[]})).unwrap();
+    assert_eq!(ledger.data().unwrap()["entries"][0]["start_address"], "南京");
+}
+
+#[test]
+fn duplicate_city_addresses_merge_atomically_without_rewriting_route_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(dir.path().join("test.db")).unwrap();
+    for (name, detail, aliases) in [
+        ("莆田", "站点", vec!["旧站"]),
+        ("莆田市", "", vec!["莆田城区"]),
+        ("金华", "", vec![]),
+        ("金华市", "", vec![]),
+        ("苏州", "甲站", vec![]),
+        ("苏州市", "乙站", vec![]),
+    ] {
+        ledger.save("addresses", json!({"name":name,"detail":detail,"aliases":aliases})).unwrap();
+    }
+    ledger.save("cars", json!({"plate":"闽A12345"})).unwrap();
+    ledger.save("entries", json!({"car_id":1,"date":"2026-11-28","kind":"收入","category":"运费","amount":"10",
+        "start_address_id":1,"end_address_id":3,"start_address_detail":"1号门"})).unwrap();
+    let snapshot = ledger.data().unwrap()["entries"][0].clone();
+    let preview = ledger.save("addresses/merge-preview", json!({})).unwrap();
+    assert_eq!(preview["pairs"].as_array().unwrap().len(),3);
+    let cities = || json!({"pairs":[{"source_id":1,"target_id":2},{"source_id":3,"target_id":4}]});
+    assert!(ledger.save("addresses/merge",json!({"pairs":[{"source_id":1,"target_id":2},{"source_id":5,"target_id":6}]})).is_err());
+    assert_eq!(ledger.data().unwrap()["entries"][0]["start_address_id"],1);
+    ledger.conn.execute("UPDATE addresses SET aliases=? WHERE id=6",["[\"旧站\"]"]).unwrap();
+    assert!(ledger.save("addresses/merge",cities()).is_err());
+    ledger.conn.execute("UPDATE addresses SET aliases='[]' WHERE id=6",[]).unwrap();
+    assert_eq!(ledger.save("addresses/merge",cities()).unwrap()["merged"],2);
+    assert!(ledger.save("addresses/merge",cities()).is_err());
+    let data = ledger.data().unwrap();
+    let addresses=data["addresses"].as_array().unwrap();
+    let address=|id| addresses.iter().find(|row| row["id"]==id).unwrap();
+    assert_eq!(address(1)["active"],0);
+    assert_eq!(address(2)["aliases"],json!(["莆田城区","莆田","旧站"]));
+    assert_eq!(address(2)["detail"],"站点");
+    assert_eq!(data["entries"][0]["start_address_id"],2);
+    assert_eq!(data["entries"][0]["end_address_id"],4);
+    for field in ["start_address","end_address","start_address_detail"] {
+        assert_eq!(data["entries"][0][field],snapshot[field]);
+    }
+    let path=dir.path().join("旧称_运费.xlsx");
+    let mut book=Workbook::new();
+    book.add_worksheet().set_name("明细").unwrap()
+        .write_row(0,0,["装车地城市","目的地城市","运费收入","车牌号","客户名称","品牌"]).unwrap()
+        .write_row(1,0,["莆田","金华","2","闽A12345","客户",""]).unwrap();
+    book.save(&path).unwrap();
+    let preview=ledger.import_excel(&path,options(&["明细"],"收入","运费"),None).unwrap();
+    assert_eq!(preview["new_addresses"],json!([]));
+    assert_eq!(preview["entries"][0]["start"],"莆田市");
+    assert_eq!(preview["entries"][0]["end"],"金华市");
 }

@@ -1,3 +1,4 @@
+import { sortFilterOptions, compareFilterLabels } from '../filter-option-sort.js';
 import {createTextMatcher} from '../text-search.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,6 +9,8 @@ const html=readFileSync(new URL('../index.html',import.meta.url),'utf8');
 const source=readFileSync(new URL('../app.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'');
 function fixture(){return {drivers:[{id:1,name:'张师傅',phone:'13800138000',note:'夜班',car_ids:[1,2]},{id:2,name:'李师傅',phone:'',note:'',car_ids:[]}],cars:[{id:1,plate:'测试001',name:'旧车型',vin:'VIN1',note:'备注'},{id:2,plate:'测试002',name:'',vin:'',note:''}],categories:[{id:1,kind:'收入',name:'运费',active:1,requires_route:1},{id:2,kind:'支出',name:'油费',active:1,requires_route:0}],addresses:[{id:1,name:'上海',detail:'',active:1},{id:2,name:'杭州',detail:'',active:1}],entries:Array.from({length:81},(_,i)=>({id:i+1,car_id:i===80?2:1,date:'2026-10-'+String(25+i%7).padStart(2,'0'),kind:i%2?'支出':'收入',category:i%2?'油费':'运费',cents:10000,start_address_id:i%3?1:null,end_address_id:i%3?2:null,start_address:i%3?'上海':null,end_address:i%3?'杭州':null,start_address_detail:i===1?'小区602室':'',end_address_detail:i===1?'园区8号':'',party:i%2?'油站':'客户',note:'备注'}))}}
 async function page(route,{admin=true,empty=false}={}){const dom=new JSDOM(html,{url:'http://tauri.localhost/#'+route,runScripts:'outside-only'}),w=dom.window,calls=[],data=fixture();
+ w.sortFilterOptions=sortFilterOptions;
+ w.compareFilterLabels=compareFilterLabels;
  w.isDesktop=true;
  if(empty){data.cars=[];data.entries=[]}
  let accountListener;
@@ -428,14 +431,14 @@ test('address actions use a compact right-aligned desktop column',()=>{
 
 test('vehicle and category actions are compact and right aligned',()=>{
  const css=readFileSync(new URL('../style.css',import.meta.url),'utf8');
- assert.ok(css.includes('#cars tr > :nth-child(6), table:has(#cars) thead th:nth-child(6){text-align:right;white-space:nowrap;width:1%}'));
+ assert.ok(css.includes('#cars tr > :nth-child(7), table:has(#cars) thead th:nth-child(7){text-align:right;white-space:nowrap;width:1%}'));
  assert.ok(css.includes('.category-lists th:last-child,.category-lists td:last-child{width:1%;white-space:nowrap;text-align:right}'));
 });
 
 
 test('operation headings stay left aligned within their compact columns',()=>{
  const css=readFileSync(new URL('../style.css',import.meta.url),'utf8');
- assert.ok(css.includes('table:has(#cars) thead th:nth-child(6),table:has(#addressRows) th:last-child,.category-lists th:last-child,.drivers-table th:last-child{text-align:left}'));
+ assert.ok(css.includes('table:has(#cars) thead th:nth-child(7),table:has(#addressRows) th:last-child,.category-lists th:last-child,.drivers-table th:last-child{text-align:left}'));
 });
 
 test('empty counterparties render as blank ledger cells',async()=>{
@@ -586,5 +589,298 @@ test('workspace navigation preserves the sidebar and account node',async()=>{
    assert.ok(d.querySelector('aside nav a[aria-current="page"]'));
   }
   assert.equal(w.accountReads,1);
+ }finally{h.close()}
+});
+
+test('batch selection is limited to the current page and requires confirmation',async()=>{
+ const h=await page('/entries');
+ try{
+  const {w}=h,d=w.document;
+  d.querySelector('#ledgerBatchToggle').click();
+  const remove=d.querySelector('#ledgerBatchDelete');
+  assert.equal(remove.disabled,true);
+  d.querySelector('#ledgerSelectPage').click();
+  assert.equal(d.querySelectorAll('#vehicleEntries input:checked').length,20);
+  w.goVehiclePage(2);
+  assert.equal(remove.disabled,true);
+  const box=d.querySelector('#vehicleEntries input');
+  box.click();
+  w.confirmDialog=async()=>false;
+  await remove.onclick();
+  assert.equal(box.checked,true);
+  w.confirmDialog=async()=>true;
+  let ids;
+  w.service.request=async(path,options)=>{
+   assert.equal(path,'/api/entries/delete-batch');
+   ids=JSON.parse(options.body).ids;
+   return {ok:true};
+  };
+  await remove.onclick();
+  assert.deepEqual(ids,[Number(box.value)]);
+  assert.equal(remove.disabled,true);
+  assert.match(d.querySelector('#subtotal').textContent,/80 笔/);
+ }finally{h.close()}
+});
+
+test('vehicle overview subtotal follows the same filters as the footer',async()=>{
+ const h=await page('/cars'),w=h.w,d=w.document;
+ try{
+  const subtotal=d.querySelector('#vehicleOverviewSubtotal');
+  const footer=d.querySelector('#vehicleOverviewTotals');
+  assert.match(subtotal.textContent,/81 笔 · 收入 ¥4,100\.00 · 支出 ¥4,000\.00 · 差额 ¥100\.00/);
+  assert.match(footer.textContent,/81 笔/);
+  d.querySelector('#search').value='测试002';
+  d.querySelector('#start').value='2026-10-28';
+  d.querySelector('#end').value='2026-10-28';
+  w.toggleAllVehicleDrivers();
+  w.toggleVehicleDriver({value:'1',checked:true});
+  assert.match(subtotal.textContent,/1 笔 · 收入 ¥100\.00 · 支出 ¥0\.00 · 差额 ¥100\.00/);
+  assert.match(footer.textContent,/1 笔/);
+  assert.match(footer.textContent,/100\.00/);
+  d.querySelector('#search').value='不存在的车辆';
+  w.render();
+  assert.match(subtotal.textContent,/0 笔 · 收入 ¥0\.00 · 支出 ¥0\.00 · 差额 ¥0\.00/);
+  assert.match(footer.textContent,/0 笔/);
+  d.querySelector('#start').value='2026-10-29';
+  w.render();
+  assert.match(subtotal.textContent,/开始日期不能晚于结束日期/);
+ }finally{h.close()}
+});
+
+test('ledger search combines vehicle and entry fields and restores on return',async()=>{
+ const h=await page('/entries',{admin:false}),w=h.w,d=w.document;
+ try{
+  const search=value=>{
+   const input=d.querySelector('#ledgerSearch');
+   input.value=value;
+   input.dispatchEvent(new w.Event('input'));
+  };
+  search('测试002 张师傅 运费 客户');
+  assert.match(d.querySelector('#subtotal').textContent,/1 笔/);
+  await w.exportVehicleRows();
+  assert.equal(h.calls.at(-1).args.ids.join(','),'81');
+  w.navigateWorkspace('#/cars/2');
+  w.navigateWorkspace('#/entries');
+  assert.equal(d.querySelector('#ledgerSearch').value,'测试002 张师傅 运费 客户');
+  d.querySelector('#end').value='2026-10-27';
+  w.renderVehicleEntries();
+  assert.match(d.querySelector('#subtotal').textContent,/0 笔/);
+  w.clearFilters();
+  assert.equal(d.querySelector('#ledgerSearch').value,'');
+  search('小区602室');
+  assert.match(d.querySelector('#subtotal').textContent,/1 笔/);
+ }finally{h.close()}
+});
+
+
+test('vehicle income and expense counts follow dates and keep amount sorting aligned',async()=>{
+ const h=await page('/cars'),w=h.w,d=w.document;
+ try{
+  const state=fixture();
+  state.cars.push({id:3,plate:'测试003'});
+  const entry=state.entries[0];
+  state.entries=[
+   ...[1,2,3].map(id=>({...entry,id})),
+   {...entry,id:4,car_id:2,cents:40000},
+   {...entry,id:5,car_id:2,kind:'支出',date:'2026-10-26'}
+  ];
+  w.service.request=async()=>({ok:true,json:async()=>state});
+  await w.load();
+  const counts=()=>Array.from(d.querySelectorAll('#cars .vehicle-entry-count'),cell=>cell.textContent);
+  const plates=()=>Array.from(d.querySelectorAll('#cars .vehicle-link'),link=>link.textContent);
+  assert.deepEqual(counts(),['3/0','1/1','0/0']);
+  assert.equal(d.querySelector('.vehicle-entry-count').dataset.label,'收支笔数');
+  w.toggleOverviewAmountSort(3);
+  assert.deepEqual(plates(),['测试002','测试001','测试003']);
+  d.querySelector('#start').value='2026-10-26';
+  w.render();
+  assert.equal(d.querySelector('#cars a[href="#/cars/2"]').closest('tr').cells[2].textContent,'0/1');
+  assert.equal(d.querySelector('#cars a[href="#/cars/2"]').closest('tr').cells[4].classList.contains('expense'),true);
+ }finally{h.close()}
+});
+
+test('filter option order is local and survives search and reopening',async()=>{
+ const h=await page('/entries'),w=h.w,d=w.document;
+ try{
+  for(const id of ['ledgerVehiclePopover','kindPopover','projectPopover','startRoutePopover','endRoutePopover','partyRoutePopover']){
+   const panel=d.getElementById(id);
+   if(id.endsWith('RoutePopover'))w.renderRouteFilters(id.replace('RoutePopover',''));
+   assert.equal(panel.querySelectorAll('.filter-option-sort').length,1,id);
+  }
+  const panel=d.querySelector('#ledgerVehiclePopover'),toggle=panel.querySelector('.filter-option-sort');
+  const values=()=>Array.from(panel.querySelectorAll('.project-chip input'),box=>box.value);
+  assert.deepEqual(values(),['1','2']);
+  const originalFirst=d.querySelector('#vehicleEntries tr').textContent;
+  toggle.click();
+  assert.deepEqual(values(),['2','1']);
+  assert.notEqual(d.querySelector('#vehicleEntries tr').textContent,originalFirst);
+  assert.equal(d.querySelector('#vehicleEntries tr .vehicle-link').textContent,'测试002');
+  assert.ok(panel.querySelector('.route-filter-choices').firstElementChild.matches('.project-all'));
+  const selected=panel.querySelector('.project-chip input');
+  selected.checked=false;
+  w.toggleLedgerVehicle(selected);
+  const search=d.querySelector('#ledgerVehicleSearch');
+  search.value='002';
+  w.renderLedgerVehicleFilter();
+  assert.deepEqual(values(),['2']);
+  assert.equal(panel.querySelector('.project-chip input').checked,false);
+  panel.showPopover();
+  panel.hidePopover();
+  panel.showPopover();
+  assert.equal(toggle.getAttribute('aria-label'),'当前倒序，切换为正序');
+  assert.ok(toggle.querySelector('svg .filter-sort-arrow'));
+  search.value='无结果';
+  w.renderLedgerVehicleFilter();
+  assert.deepEqual(values(),[]);
+  w.navigateWorkspace('#/cars');
+  assert.equal(d.querySelector('#ledgerVehiclePopover .filter-option-sort').getAttribute('aria-pressed'),'false');
+  assert.equal(d.querySelectorAll('#vehicleDriverPopover .filter-option-sort').length,1);
+ }finally{h.close()}
+});
+
+test('custom address aliases can be edited and used to find the formal address',async()=>{
+ const h=await page('/addresses'),w=h.w,d=w.document;
+ try{
+  const state=fixture();
+  state.addresses[0].aliases=['申城','沪上'];
+  let payload;
+  w.service.request=async(path,options)=>{
+   if(options?.method==='POST'){
+    payload=JSON.parse(options.body);
+    state.addresses[0].aliases=payload.aliases;
+   }
+   return {ok:true,json:async()=>state};
+  };
+  await w.load();
+  d.querySelector('#customAddressSearch').value='申城';
+  w.renderCustomAddressRows();
+  assert.match(d.querySelector('#customAddressRows').textContent,/上海/);
+  w.customAddressForm(1);
+  const fields=d.querySelector('#fields');
+  assert.deepEqual([...fields.querySelectorAll('[name=aliases]')].map(input=>input.value),['申城','沪上']);
+  fields.querySelector('[data-remove-alias]').click();
+  fields.querySelector('[data-add-alias]').click();
+  const aliases=fields.querySelectorAll('[name=aliases]');
+  aliases[1].value='上海城';
+  await d.querySelector('#form').onsubmit({preventDefault(){}});
+  assert.deepEqual(payload.aliases,['沪上','上海城']);
+  w.navigateWorkspace('#/entries');
+  w.entryForm(1);
+  const start=d.querySelector('#start-address');
+  start.value='沪上';
+  w.suggest('start');
+  assert.match(d.querySelector('#start-list').textContent,/上海/);
+  w.chooseAddress('start',1);
+  assert.equal(start.value,'上海');
+ }finally{h.close()}
+});
+
+test('address merge shows blocked pairs and keeps selections when confirmation is cancelled',async()=>{
+ const h=await page('/addresses'),w=h.w,d=w.document;
+ try{
+  const requests=[];
+  const pairs=[
+   {source_id:1,target_id:2,source_name:'莆田',target_name:'莆田市',aliases:['莆田','旧站']},
+   {source_id:3,target_id:4,source_name:'苏州',target_name:'苏州市',aliases:['苏州'],blocked:'详细地址不同'}
+  ];
+  w.service.request=async(path,options)=>{
+   requests.push([path,options]);
+   return {ok:true,json:async()=>path.endsWith('merge-preview')?{pairs}:path.endsWith('/merge')?{merged:1}:fixture()};
+  };
+  w.openAddressMerge();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const boxes=d.querySelectorAll('#addressMergeCandidates input');
+  const save=d.querySelector('#save'),form=d.querySelector('#form');
+  assert.equal(save.disabled,true);
+  assert.equal(boxes[1].disabled,true);
+  const all=d.querySelector('#addressMergeSelectAll');
+  const count=d.querySelector('#addressMergeCount');
+  assert.match(count.textContent,/发现 2 组重复项 · 已选 0 组 · 1 组不可合并/);
+  all.click();
+  assert.equal(boxes[0].checked,true);
+  assert.equal(boxes[1].checked,false);
+  assert.match(count.textContent,/已选 1 组/);
+  all.click();
+  assert.equal(boxes[0].checked,false);
+  assert.equal(save.disabled,true);
+  all.click();
+  w.confirmDialog=async()=>false;
+  await form.onsubmit({preventDefault(){}});
+  assert.equal(boxes[0].checked,true);
+  assert.equal(requests.length,1);
+  w.confirmDialog=async()=>true;
+  await form.onsubmit({preventDefault(){}});
+  assert.deepEqual(JSON.parse(requests[1][1].body),{pairs:[{source_id:1,target_id:2}]});
+  assert.equal(d.querySelector('#modal').open,false);
+ }finally{h.close()}
+});
+
+test('custom address links filter both route ends and preserve the route on return',async()=>{
+ const h=await page('/addresses',{admin:false}),w=h.w,d=w.document;
+ try{
+  const state=fixture(),entry=state.entries[0];
+  state.addresses[0].aliases=['申城'];
+  state.entries=[
+   {...entry,id:1,start_address_id:1,start_address:'旧名称',end_address_id:2},
+   {...entry,id:2,start_address_id:2,end_address_id:1},
+   {...entry,id:3,start_address_id:1,end_address_id:1},
+   {...entry,id:4,start_address_id:null,start_address:'申城',end_address_id:2,date:'2026-10-26'},
+   {...entry,id:5,start_address_id:2,start_address:'上海',end_address_id:2}
+  ];
+  w.service.request=async()=>({ok:true,json:async()=>state});
+  await w.load();
+  const hash=d.querySelector('#customAddressRows a[href="#/entries?address=1"]').hash;
+  w.navigateWorkspace(hash);
+  assert.match(d.querySelector('#ledgerAddressFilter').textContent,/起点或终点：上海/);
+  assert.match(d.querySelector('#subtotal').textContent,/4 笔/);
+  d.querySelector('#start').value='2026-10-26';
+  w.renderVehicleEntries();
+  assert.match(d.querySelector('#subtotal').textContent,/1 笔/);
+  await w.exportVehicleRows();
+  assert.deepEqual([...h.calls.at(-1).args.ids],[4]);
+  w.navigateWorkspace('#/cars/1');
+  assert.equal(d.querySelector('.vehicle-breadcrumb a').hash,hash);
+  w.navigateWorkspace(hash);
+  assert.match(d.querySelector('#subtotal').textContent,/1 笔/);
+  d.querySelector('#ledgerAddressFilter button').click();
+  assert.equal(w.location.hash,'#/entries');
+  assert.equal(d.querySelector('#ledgerAddressFilter'),null);
+  assert.equal(d.querySelector('#start').value,'2026-10-26');
+  w.navigateWorkspace('#/entries?address=999');
+  assert.match(d.querySelector('#ledgerAddressFilter').textContent,/不存在或已停用/);
+  assert.match(d.querySelector('#subtotal').textContent,/0 笔/);
+  w.clearFilters();
+  assert.match(d.querySelector('#subtotal').textContent,/5 笔/);
+ }finally{h.close()}
+});
+
+test('vehicle color applies to both ledger layouts and stays left of selection',async()=>{
+ const h=await page('/cars'),w=h.w,d=w.document;
+ try{
+  const state=fixture();
+  state.cars[0].color='purple';
+  state.entries=state.entries.slice(0,2);
+  w.service.request=async()=>({ok:true,json:async()=>state});
+  await w.load();
+  w.carForm(1);
+  assert.equal(d.querySelector('[name=color]:checked').value,'purple');
+  await w.requestClose();
+  w.carForm();
+  assert.equal(d.querySelector('[name=color]:checked').value,'');
+  await w.requestClose();
+  w.navigateWorkspace('#/entries');
+  const markers=()=>[...d.querySelectorAll('.vehicle-row-marker')];
+  assert.equal(markers().length,2);
+  assert.ok(markers().every(marker=>marker.dataset.color==='purple'&&marker.title==='备注'));
+  d.querySelector('#ledgerBatchToggle').click();
+  assert.ok(markers().every(marker=>marker.parentElement.matches('td.ledger-select')&&marker===marker.parentElement.firstChild));
+  w.navigateWorkspace('#/cars/1');
+  assert.equal(markers().length,2);
+  state.cars[0].note='';
+  await w.load();
+  assert.ok(markers().every(marker=>!marker.hasAttribute('title')));
+  state.cars[0].color='';
+  await w.load();
+  assert.equal(markers().length,0);
  }finally{h.close()}
 });
