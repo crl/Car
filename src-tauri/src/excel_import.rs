@@ -31,6 +31,10 @@ trait ExcelImporter: Sync + Send {
     fn kind(&self) -> &'static str;
     fn headers(&self) -> &'static [&'static str];
 
+    fn requires_party(&self) -> bool {
+        true
+    }
+
     fn find_header(&self, range: &Range<Data>) -> Option<(usize, Vec<usize>)> {
         header_indices(range.rows().next()?, self.headers()).map(|columns| (0, columns))
     }
@@ -99,6 +103,7 @@ pub struct ImportOptions {
     #[serde(default)]
     sheets: Vec<String>,
     date: String,
+    #[serde(default)]
     party: String,
     kind: String,
     category: String,
@@ -555,7 +560,8 @@ impl ImportRegistry {
             ));
         }
         Ok(json!({
-            "path":path,"sheets":sheets,"kind":importer.handler.kind(),"default_category":importer.name
+            "path":path,"sheets":sheets,"kind":importer.handler.kind(),"default_category":importer.name,
+            "requires_party":importer.handler.requires_party()
         }))
     }
 
@@ -576,11 +582,8 @@ impl ImportRegistry {
         } = options;
         let party = party.trim();
         let date_value = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d");
-        if date.starts_with("0000")
-            || !date_value.is_ok_and(|d| d.to_string() == date)
-            || party.is_empty()
-        {
-            return Err("请填写有效的记账日期和往来方".into());
+        if date.starts_with("0000") || !date_value.is_ok_and(|d| d.to_string() == date) {
+            return Err("请填写有效的记账日期".into());
         }
         if sheets.is_empty() && !sheet.is_empty() {
             sheets.push(sheet);
@@ -589,6 +592,9 @@ impl ImportRegistry {
             return Err("请至少选择一张子表".into());
         }
         let (file_stem, importer, mut workbook) = self.open(ledger, path)?;
+        if importer.handler.requires_party() && party.is_empty() {
+            return Err("请填写往来方".into());
+        }
         if kind != importer.handler.kind() {
             return Err(format!(
                 "{}文件只能导入为{}",

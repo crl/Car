@@ -146,6 +146,33 @@ test('ledger pagination, intersecting filters, clear and export use all filtered
  w.clearFilters();assert.match(d.querySelector('#subtotal').textContent,/81 笔/);
  assert.equal(d.querySelectorAll('#vehicleEntries tr').length,50);
 }finally{h.close()}});
+test('salary entry forms hide the counterparty and preserve existing salary data on edit',async()=>{
+ const h=await page('/entries'),{w}=h,d=w.document,state=fixture();
+ try{
+  state.categories.push({kind:'支出',name:'司机工资',active:1});
+  state.entries[1].category='司机工资';
+  let saved;
+  w.service.request=async(path,options)=>{
+   if(options?.method==='POST')saved=JSON.parse(options.body);
+   return {ok:true,json:async()=>state};
+  };
+  await w.load();
+  w.entryForm(1);
+  const form=d.querySelector('#form'),f=form.elements;
+  f.amount.value='10';f.party.value='油站';f.category.value='司机工资';w.syncRoute();
+  assert.equal(f.party.closest('label').hidden,true);
+  assert.equal(f.party.disabled,true);
+  f.category.value='油费';w.syncRoute();assert.equal(f.party.closest('label').hidden,false);
+  f.category.value='司机工资';w.syncRoute();
+  await form.onsubmit({preventDefault(){}});
+  assert.equal(saved.party,'');
+  w.editLedgerEntry(2);
+  assert.equal(f.party.closest('label').hidden,true);
+  await form.onsubmit({preventDefault(){}});
+  assert.equal(saved.id,'2');
+  assert.equal(saved.party,state.entries[1].party);
+ }finally{h.close()}
+});
 test('entry editing retains values and route swap; cancel does not save',async()=>{const h=await page('/cars/1'),w=h.w,d=w.document;try{
  w.editLedgerEntry(1);const f=d.querySelector('#form');assert.equal(f.elements.car_id.value,'1');assert.equal(f.elements.amount.value,'100.00');assert.equal(f.elements.note.value,'备注');
  f.elements.start_address.value='上海';f.elements.end_address.value='杭州';w.swapRoute();assert.equal(f.elements.start_address.value,'杭州');assert.equal(f.elements.end_address.value,'上海');await w.requestClose();assert.equal(d.querySelector('#modal').open,false);assert.equal(h.calls.length,0);

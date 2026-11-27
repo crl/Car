@@ -9,6 +9,10 @@ const HEADERS: &[&str] = &["车牌号", "司机工资"];
 pub(super) struct DriverSalaryImporter;
 
 impl ExcelImporter for DriverSalaryImporter {
+    fn requires_party(&self) -> bool {
+        false
+    }
+
     fn kind(&self) -> &'static str {
         "支出"
     }

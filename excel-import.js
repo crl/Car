@@ -189,7 +189,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
     return;
   }
   if (file.cancelled) return;
-  const { kind, default_category: defaultCategory } = file;
+  const { kind, default_category: defaultCategory, requires_party: requiresParty = true } = file;
 
   const dialog = document.createElement('dialog');
   dialog.className = 'excel-import';
@@ -211,7 +211,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
           <p class="help" data-no-sheets hidden>没有匹配的子表</p>
         </fieldset>
         <label>记账日期<input id="excelImportDate" name="date" required></label>
-        <label>往来方<input name="party" placeholder="如：华通" required></label>
+        ${requiresParty ? '<label>往来方<input name="party" placeholder="如：华通" required></label>' : ''}
         <div class="import-accounting">
           <fieldset class="import-direction">
             <legend>收支方向</legend>
@@ -291,7 +291,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
     if (!form.reportValidity()) return;
     const fields = new FormData(form);
     const options = {
-      sheets: fields.getAll('sheets'), date: fields.get('date'), party: fields.get('party'),
+      sheets: fields.getAll('sheets'), date: fields.get('date'), party: fields.get('party') || '',
       kind, category: fields.get('category'),
     };
     if (!options.sheets.length) {
@@ -304,7 +304,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
       form.elements.date.focus();
       return;
     }
-    if (!options.party.trim()) {
+    if (requiresParty && !options.party.trim()) {
       errorNode.textContent = '请填写往来方';
       return;
     }
@@ -328,7 +328,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
       const { entries, errors, new_plates, new_addresses } = result;
       const showSheet = result.sheets.length > 1;
       previewNode.innerHTML = `
-        <p>${esc(result.date)} · ${esc(result.party)} · ${esc(result.kind)} / ${esc(result.category)}</p>
+        <p>${esc(result.date)} · ${result.party ? esc(result.party) + ' · ' : ''}${esc(result.kind)} / ${esc(result.category)}</p>
         <p>明细 ${result.details} 条 · 明细金额合计 ¥${money(result.source_total)}</p>
         <p>当前可入账 ${entries.length} 笔 · ¥${money(result.total)}
           ${result.duplicates ? ` · 重复跳过 ${result.duplicates} 条（¥${money(result.duplicate_total)}）` : ''}</p>

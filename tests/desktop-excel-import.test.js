@@ -14,7 +14,7 @@ const projects = [
   { kind: '支出', name: '工资', active: false },
 ];
 
-async function openImport(t, { kind = '收入', defaultCategory = '运费', categories = projects, sheets = ['甲表', '乙表'] } = {}) {
+async function openImport(t, { kind = '收入', defaultCategory = '运费', requiresParty = true, categories = projects, sheets = ['甲表', '乙表'] } = {}) {
   const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only' });
   t.after(() => dom.window.close());
   const calls = [];
@@ -43,10 +43,10 @@ async function openImport(t, { kind = '收入', defaultCategory = '运费', cate
   };
   await openExcelImport({
     service: { call: async (command, args) => {
-      if (command === 'pick_excel_import') return { path: 'test.xlsx', sheets, kind, default_category: defaultCategory };
+      if (command === 'pick_excel_import') return { path: 'test.xlsx', sheets, kind, default_category: defaultCategory, requires_party: requiresParty };
       assert.equal(command, 'import_excel');
       calls.push(structuredClone(args));
-      return { ...preview, kind: args.options.kind, category: args.options.category };
+      return { ...preview, party: args.options.party, kind: args.options.kind, category: args.options.category };
     } },
     categories,
     esc: value => String(value), money: cents => (cents / 100).toFixed(2),
@@ -55,9 +55,22 @@ async function openImport(t, { kind = '收入', defaultCategory = '运费', cate
   const dialog = dom.window.document.querySelector('dialog');
   const form = dialog.querySelector('form');
   form.elements.date.value = '2026-11-24';
-  form.elements.party.value = '测试';
+  if (form.elements.party) form.elements.party.value = '测试';
   return { dialog, form, calls, preview, notifications, Event: dom.window.Event };
 }
+
+test('司机工资 can preview and confirm without a counterparty', async t => {
+  const {dialog, form, calls} = await openImport(t, {
+    kind: '支出', defaultCategory: '司机工资', requiresParty: false,
+    categories: [{kind: '支出', name: '司机工资', active: true}],
+  });
+  assert.equal(form.elements.namedItem('party'), null);
+  await dialog.querySelector('[data-check]').onclick();
+  assert.equal(dialog.querySelector('[data-preview] p').textContent, '2026-11-24 · 支出 / 司机工资');
+  await dialog.querySelector('[data-import]').onclick();
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.options.party === ''));
+});
 
 test('freight previews all checked sheets and invalidates confirmation when they change', async t => {
   const { dialog, form, calls, preview, Event } = await openImport(t);

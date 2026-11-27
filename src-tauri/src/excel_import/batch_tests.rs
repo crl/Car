@@ -90,7 +90,11 @@ fn salary_matches_sheets_groups_per_plate_and_tracks_each_imported_sheet() {
     assert_eq!(info["sheets"], json!(["工资明细", "另一张"]));
     assert_eq!(info["default_category"], "司机工资");
     assert_eq!(info["kind"], "支出");
-    let select = || options(&["工资明细", "另一张"], "支出", "司机工资");
+    assert_eq!(info["requires_party"], false);
+    let select = || ImportOptions {
+        party: String::new(),
+        ..options(&["工资明细", "另一张"], "支出", "司机工资")
+    };
     assert!(ledger
         .import_excel(&path, options(&["不匹配"], "支出", "司机工资"), None)
         .is_err());
@@ -112,6 +116,11 @@ fn salary_matches_sheets_groups_per_plate_and_tracks_each_imported_sheet() {
         2
     );
     let repeated = ledger.import_excel(&path, select(), None).unwrap();
+    assert!(ledger.data().unwrap()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["party"] == ""));
     assert_eq!(repeated["entries"], json!([]));
     assert_eq!(repeated["duplicates"], 3);
     salary_workbook("102").save(&path).unwrap();
@@ -310,7 +319,16 @@ fn transfer_fees_skip_footer_group_and_deduplicate_dispatches() {
     assert_eq!(info["sheets"], json!(["甲", "乙"]));
     assert_eq!(info["kind"], "支出");
     assert_eq!(info["default_category"], "倒板费");
+    assert_eq!(info["requires_party"], true);
     let select = || options(&["甲", "乙"], "支出", "倒板费");
+    let missing_party = ImportOptions {
+        party: "  ".into(),
+        ..select()
+    };
+    assert_eq!(
+        ledger.import_excel(&path, missing_party, None).unwrap_err(),
+        "请填写往来方"
+    );
     let preview = ledger.import_excel(&path, select(), None).unwrap();
     assert_eq!(preview["details"], 4);
     assert_eq!(preview["duplicates"], 1);
@@ -322,7 +340,14 @@ fn transfer_fees_skip_footer_group_and_deduplicate_dispatches() {
     assert_eq!(saved["count"], 2);
     let entries = ledger.data().unwrap()["entries"].clone();
     for entry in entries.as_array().unwrap() {
-        assert_eq!(entry["note"], if entry["cents"] == 60050 { "由2笔合并" } else { "" });
+        assert_eq!(
+            entry["note"],
+            if entry["cents"] == 60050 {
+                "由2笔合并"
+            } else {
+                ""
+            }
+        );
     }
     assert!(entries
         .as_array()
