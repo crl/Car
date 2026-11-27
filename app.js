@@ -371,20 +371,31 @@ function arrangeWorkspace(){
 
 
 function vehicleProjects(){const projects=new Map();ledgerScope().forEach(e=>projects.set(projectKey(e),e));return [...projects.entries()].sort((a,b)=>a[1].kind.localeCompare(b[1].kind)||a[1].category.localeCompare(b[1].category,'zh-CN'))}
-function renderProjectFilters(){if(!$('projectChoices'))return;updateProjectHeader();let projects=vehicleProjects();$('projectChoices').innerHTML='<button type="button" class="project-all '+(vehicleProjectSelection===null?'selected':'')+'" aria-pressed="'+(vehicleProjectSelection===null)+'" onclick="allVehicleProjects()">全部项目</button>'+projects.map(([key,e])=>`<label class="project-chip"><input type="checkbox" value="${esc(key)}" ${vehicleProjectSelection===null||vehicleProjectSelection.has(key)?'checked':''} onchange="toggleVehicleProject(this)"><span>${esc(e.category)}<small>${esc(e.kind)}</small></span></label>`).join('');if(!projects.length)$('projectChoices').insertAdjacentHTML('beforeend','<span class="help">暂无可筛选项目</span>')}
+function renderProjectFilters(){
+ const choices=$('projectChoices');
+ if(!choices)return;
+ updateProjectHeader();
+ const projects=vehicleProjects(),matchesText=createTextMatcher($('projectSearch').value);
+ const matches=projects.filter(([,entry])=>matchesText(`${entry.category} ${entry.kind}`));
+ const all=vehicleProjectSelection===null;
+ choices.innerHTML=`<button type="button" class="project-all ${all?'selected':''}" aria-pressed="${all}" onclick="allVehicleProjects()">全部项目</button>`+
+  matches.map(([key,e])=>`<label class="project-chip"><input type="checkbox" value="${esc(key)}" ${all||vehicleProjectSelection.has(key)?'checked':''} onchange="toggleVehicleProject(this)"><span>${esc(e.category)}<small>${esc(e.kind)}</small></span></label>`).join('');
+ if(!matches.length)choices.insertAdjacentHTML('beforeend',`<span class="help">${projects.length?'没有匹配的项目':'暂无可筛选项目'}</span>`);
+}
 function allVehicleProjects(){vehicleProjectSelection=vehicleProjectSelection===null?new Set():null;renderProjectFilters();renderVehicleEntries()}
 function toggleVehicleProject(input){if(vehicleProjectSelection===null)vehicleProjectSelection=new Set(vehicleProjects().map(([key])=>key));if(input.checked)vehicleProjectSelection.add(input.value);else vehicleProjectSelection.delete(input.value);if(vehicleProjectSelection.size===vehicleProjects().length)vehicleProjectSelection=null;renderProjectFilters();renderVehicleEntries()}
 
 function installProjectHeaderFilter(){
  const header=document.querySelector('.vehicle-entries th:nth-child(3)');
  header.innerHTML='<button type="button" class="project-header-button" onclick="openProjectFilter(this)" aria-haspopup="dialog" aria-expanded="false" aria-controls="projectPopover">项目 ▾</button>';
- $('subtotal').insertAdjacentHTML('beforebegin','<div id="projectPopover" popover aria-label="项目筛选" role="dialog"><div class="filter-popover-head"><strong>筛选项目</strong><button type="button" class="text-button" onclick="document.getElementById(\'projectPopover\').hidePopover()" aria-label="关闭项目筛选">×</button></div><p class="help">勾选一个或多个项目组合查看</p><div id="projectChoices"></div></div>');
+ $('subtotal').insertAdjacentHTML('beforebegin','<div id="projectPopover" popover aria-label="项目筛选" role="dialog"><div class="filter-popover-head"><strong>筛选项目</strong><button type="button" class="text-button" onclick="document.getElementById(\'projectPopover\').hidePopover()" aria-label="关闭项目筛选">×</button></div><label class="help">搜索项目<input id="projectSearch" type="search" placeholder="输入项目名称或拼音"></label><div id="projectChoices" class="route-filter-choices"></div></div>');
+ $('projectSearch').addEventListener('input',renderProjectFilters);
  const toolbar=document.querySelector('.vehicle-entries').closest('section').querySelector('.toolbar');
  toolbar.insertAdjacentHTML('beforeend','<button class="project-header-button mobile-project-filter" onclick="openProjectFilter(this)" aria-haspopup="dialog" aria-expanded="false" aria-controls="projectPopover">项目 ▾</button>');
  $('projectPopover').addEventListener('toggle',e=>document.querySelectorAll('[aria-controls="projectPopover"]').forEach(b=>b.setAttribute('aria-expanded',String(e.newState==='open'))));
 }
 function updateProjectHeader(){const text=vehicleProjectSelection===null?'项目 ▾':`项目（${vehicleProjectSelection.size}） ▾`;document.querySelectorAll('[aria-controls="projectPopover"]').forEach(b=>{b.textContent=text;b.classList.toggle('is-filtered',vehicleProjectSelection!==null)})}
-function openProjectFilter(button){const panel=$('projectPopover');if(panel.matches(':popover-open')){panel.hidePopover();return}panel.showPopover();const rect=button.getBoundingClientRect();const width=panel.getBoundingClientRect().width;panel.style.left=Math.max(12,Math.min(rect.left,innerWidth-width-12))+'px';panel.style.top=Math.max(12,Math.min(rect.bottom+8,innerHeight-panel.getBoundingClientRect().height-12))+'px'}
+function openProjectFilter(button){const panel=$('projectPopover');if(panel.matches(':popover-open')){panel.hidePopover();return}$('projectSearch').value='';renderProjectFilters();panel.showPopover();const rect=button.getBoundingClientRect();const width=panel.getBoundingClientRect().width;panel.style.left=Math.max(12,Math.min(rect.left,innerWidth-width-12))+'px';panel.style.top=Math.max(12,Math.min(rect.bottom+8,innerHeight-panel.getBoundingClientRect().height-12))+'px';$('projectSearch').focus()}
 
 function renderVehicleTotals(income,expense){
  let footer=$('vehicleTotals');if(!footer){document.querySelector('.vehicle-entries').closest('.scroll').insertAdjacentHTML('afterend','<div id="vehicleTotals" class="ledger-totals" aria-live="polite"></div>');footer=$('vehicleTotals')}

@@ -9,6 +9,163 @@ fn options(sheets: &[&str], kind: &str, category: &str) -> ImportOptions {
     .unwrap()
 }
 
+fn salary_workbook(wage: &str) -> Workbook {
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet().set_name("工资明细").unwrap();
+    sheet
+        .write_string(1, 1, "本月工资")
+        .unwrap()
+        .write_string(4, 1, "司机工资")
+        .unwrap()
+        .write_string(4, 4, "车牌号")
+        .unwrap()
+        .write_formula(
+            5,
+            1,
+            rust_xlsxwriter::Formula::new("=70+30").set_result(wage),
+        )
+        .unwrap()
+        .write_string(5, 4, " 沪a12345 ")
+        .unwrap()
+        .write_number(6, 1, 80.25)
+        .unwrap()
+        .write_string(6, 4, "沪A12345")
+        .unwrap()
+        .write_number(7, 1, 0)
+        .unwrap()
+        .write_string(7, 4, "沪B00000")
+        .unwrap()
+        .write_string(8, 0, "其他员工")
+        .unwrap()
+        .write_formula(
+            9,
+            1,
+            rust_xlsxwriter::Formula::new("=SUM(B6:B9)").set_result("180.25"),
+        )
+        .unwrap();
+    workbook
+        .add_worksheet()
+        .set_name("另一张")
+        .unwrap()
+        .write_row(0, 0, ["车牌号", "司机工资"])
+        .unwrap()
+        .write_row(1, 0, ["沪A12345", "20"])
+        .unwrap();
+    workbook
+        .add_worksheet()
+        .set_name("不匹配")
+        .unwrap()
+        .write_row(0, 0, ["车牌号", "实发工资"])
+        .unwrap()
+        .write_string(1, 1, "司机工资")
+        .unwrap();
+    workbook
+}
+
+#[test]
+fn salary_matches_sheets_groups_per_plate_and_tracks_each_imported_sheet() {
+    let folder = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(folder.path().join("test.db")).unwrap();
+    let path = folder.path().join("本月_司机工资.xlsx");
+    salary_workbook("100").save(&path).unwrap();
+    let unavailable = || {
+        assert!(ledger
+            .excel_import_info(&path)
+            .unwrap_err()
+            .contains("『司机工资』不存在或已停用"))
+    };
+    unavailable();
+    ledger
+        .save("categories", json!({"kind":"支出","name":"司机工资"}))
+        .unwrap();
+    ledger
+        .conn
+        .execute("UPDATE categories SET active=0 WHERE name='司机工资'", [])
+        .unwrap();
+    unavailable();
+    ledger
+        .save("categories", json!({"kind":"支出","name":"司机工资"}))
+        .unwrap();
+    let info = ledger.excel_import_info(&path).unwrap();
+    assert_eq!(info["sheets"], json!(["工资明细", "另一张"]));
+    assert_eq!(info["default_category"], "司机工资");
+    assert_eq!(info["kind"], "支出");
+    let select = || options(&["工资明细", "另一张"], "支出", "司机工资");
+    assert!(ledger
+        .import_excel(&path, options(&["不匹配"], "支出", "司机工资"), None)
+        .is_err());
+    let preview = ledger.import_excel(&path, select(), None).unwrap();
+    assert_eq!(preview["details"], 3);
+    assert_eq!(preview["entries"][0]["sources"], 2);
+    assert_eq!(preview["entries"][0]["cents"], 18025);
+    assert_eq!(preview["total"], 20025);
+    assert_eq!(preview["new_plates"], json!(["沪A12345"]));
+    assert_eq!(preview["new_addresses"], json!([]));
+    salary_workbook("101").save(&path).unwrap();
+    assert!(ledger
+        .import_excel(&path, select(), Some(preview.clone()))
+        .is_err());
+    assert_eq!(ledger.data().unwrap()["entries"], json!([]));
+    salary_workbook("100").save(&path).unwrap();
+    assert_eq!(
+        ledger.import_excel(&path, select(), Some(preview)).unwrap()["count"],
+        2
+    );
+    let repeated = ledger.import_excel(&path, select(), None).unwrap();
+    assert_eq!(repeated["entries"], json!([]));
+    assert_eq!(repeated["duplicates"], 3);
+    salary_workbook("102").save(&path).unwrap();
+    let conflict = ledger.import_excel(&path, select(), None).unwrap();
+    assert!(conflict["errors"][0].as_str().unwrap().contains("工资明细"));
+    assert!(ledger
+        .import_excel(&path, select(), Some(conflict))
+        .is_err());
+}
+
+#[test]
+fn invalid_salaries_report_excel_row_numbers_and_block_the_batch() {
+    let folder = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(folder.path().join("test.db")).unwrap();
+    ledger
+        .save("categories", json!({"kind":"支出","name":"司机工资"}))
+        .unwrap();
+    let path = folder.path().join("测试_司机工资.xlsx");
+    let mut workbook = salary_workbook("100");
+    let sheet = workbook.add_worksheet().set_name("问题").unwrap();
+    sheet
+        .set_formula_result_default("")
+        .write_row(4, 3, ["车牌号", "司机工资"])
+        .unwrap()
+        .write_string(5, 3, "沪A1")
+        .unwrap()
+        .write_number(6, 4, 120)
+        .unwrap()
+        .write_row(7, 3, ["沪A2", "-1"])
+        .unwrap()
+        .write_row(8, 3, ["沪A3", "文字"])
+        .unwrap()
+        .write_row(9, 3, ["沪A4", "0.001"])
+        .unwrap()
+        .write_row(10, 3, ["沪A5", "0.00"])
+        .unwrap()
+        .write_formula(11, 4, "=1+2")
+        .unwrap();
+    workbook.save(&path).unwrap();
+    let select = || options(&["问题", "工资明细"], "支出", "司机工资");
+    let preview = ledger.import_excel(&path, select(), None).unwrap();
+    let errors = preview["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 6, "{errors:?}");
+    for (error, row) in errors.iter().zip([6, 7, 8, 9, 10, 12]) {
+        assert!(error
+            .as_str()
+            .unwrap()
+            .contains(&format!("「问题」第 {row} 行")));
+    }
+    assert!(errors[5].as_str().unwrap().contains("计算结果"));
+    assert!(ledger.import_excel(&path, select(), Some(preview)).is_err());
+    assert_eq!(ledger.data().unwrap()["entries"], json!([]));
+}
+
 fn freight_sheet(workbook: &mut Workbook, name: &str, rows: &[(&str, &str)]) {
     let sheet = workbook.add_worksheet().set_name(name).unwrap();
     sheet
@@ -159,9 +316,14 @@ fn transfer_fees_skip_footer_group_and_deduplicate_dispatches() {
     assert_eq!(preview["duplicates"], 1);
     assert_eq!(preview["total"], 132050);
     assert_eq!(preview["entries"][0]["sources"], 2);
+    assert_eq!(preview["entries"][0]["note"], "由2笔合并");
+    assert_eq!(preview["entries"][1]["note"], "");
     let saved = ledger.import_excel(&path, select(), Some(preview)).unwrap();
     assert_eq!(saved["count"], 2);
     let entries = ledger.data().unwrap()["entries"].clone();
+    for entry in entries.as_array().unwrap() {
+        assert_eq!(entry["note"], if entry["cents"] == 60050 { "由2笔合并" } else { "" });
+    }
     assert!(entries
         .as_array()
         .unwrap()

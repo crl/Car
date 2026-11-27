@@ -16,6 +16,8 @@ use std::{
 #[path = "excel_import/batch_tests.rs"]
 mod batch_tests;
 
+#[path = "excel_import/driver_salary.rs"]
+mod driver_salary;
 #[path = "excel_import/freight.rs"]
 mod freight;
 #[path = "excel_import/pickup.rs"]
@@ -28,6 +30,10 @@ type Workbook = Xlsx<BufReader<File>>;
 trait ExcelImporter: Sync + Send {
     fn kind(&self) -> &'static str;
     fn headers(&self) -> &'static [&'static str];
+
+    fn find_header(&self, range: &Range<Data>) -> Option<(usize, Vec<usize>)> {
+        header_indices(range.rows().next()?, self.headers()).map(|columns| (0, columns))
+    }
 
     fn matches_filename(&self, stem: &str, category: &str) -> bool {
         stem.strip_suffix(category)
@@ -70,6 +76,9 @@ fn builtin_importers() -> &'static ImportRegistry {
     static REGISTRY: OnceLock<ImportRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
         let mut registry = ImportRegistry::default();
+        registry
+            .register("司机工资", driver_salary::DriverSalaryImporter)
+            .expect("unique driver salary importer");
         registry
             .register("运费", freight::FreightImporter)
             .expect("unique freight importer");
@@ -146,6 +155,75 @@ struct Group {
     end: String,
     cents: i64,
     source_rows: Vec<usize>,
+}
+
+impl Group {
+    fn merge_note(&self) -> String {
+        let count = self.source_rows.len();
+        if count > 1 {
+            format!("由{count}笔合并")
+        } else {
+            String::new()
+        }
+    }
+}
+
+// One source fingerprint per sheet, linked to every ledger entry it produced.
+struct WholeSheetRun {
+    file_stem: String,
+    source_table: &'static str,
+    prepare: fn(&mut Workbook, &str, &mut Vec<String>) -> Result<PreparedSheet>,
+}
+
+impl ImportRun for WholeSheetRun {
+    fn read_sheet(
+        &mut self,
+        tx: &Transaction<'_>,
+        workbook: &mut Workbook,
+        sheet: &str,
+        errors: &mut Vec<String>,
+    ) -> Result<PreparedSheet> {
+        let mut prepared = (self.prepare)(workbook, sheet, errors)?;
+        let sql = format!(
+            "SELECT fingerprint FROM {} WHERE file_stem=? AND sheet=? LIMIT 1",
+            self.source_table
+        );
+        let existing: Option<String> = tx
+            .query_row(&sql, params![self.file_stem, sheet], |row| row.get(0))
+            .optional()
+            .map_err(err)?;
+        if let Some(previous) = existing {
+            if previous == prepared.fingerprint {
+                prepared.duplicates = prepared.rows.len();
+                prepared.duplicate_total = prepared.source_total;
+            } else {
+                errors.push(format!(
+                    "子表「{sheet}」已导入，当前内容与已入账版本不同，请先核对账目"
+                ));
+            }
+            prepared.rows.clear();
+        }
+        Ok(prepared)
+    }
+
+    fn record_sources(
+        &self,
+        tx: &Transaction<'_>,
+        sheet: &SheetImport,
+        _group: &Group,
+        entry_id: i64,
+    ) -> Result<()> {
+        let sql = format!(
+            "INSERT INTO {}(file_stem,sheet,fingerprint,entry_id) VALUES(?,?,?,?)",
+            self.source_table
+        );
+        tx.execute(
+            &sql,
+            params![self.file_stem, sheet.name, sheet.fingerprint, entry_id],
+        )
+        .map_err(err)?;
+        Ok(())
+    }
 }
 
 struct SheetImport {
@@ -465,12 +543,7 @@ impl ImportRegistry {
         let mut sheets = Vec::new();
         for name in workbook.sheet_names() {
             let range = workbook.worksheet_range(&name).map_err(err)?;
-            if range
-                .rows()
-                .next()
-                .and_then(|header| header_indices(header, headers))
-                .is_some()
-            {
+            if importer.handler.find_header(&range).is_some() {
                 sheets.push(name);
             }
         }
@@ -576,7 +649,7 @@ impl ImportRegistry {
                     json!({
                         "sheet": sheet.name, "car": group.car, "plate": group.plate,
                         "start": group.start, "end": group.end, "cents": group.cents,
-                        "sources": group.source_rows.len()
+                        "sources": group.source_rows.len(), "note": group.merge_note()
                     })
                 })
             })
@@ -629,6 +702,7 @@ impl ImportRegistry {
                     json!({
                         "car_id": car, "date": date, "party": party, "kind": kind,
                         "category": category,
+                        "note": group.merge_note(),
                         "amount": format!("{}.{:02}", group.cents / 100, group.cents % 100),
                         "start_address_id": address_id(&group.start),
                         "end_address_id": address_id(&group.end)

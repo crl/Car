@@ -1,9 +1,8 @@
 use super::{
-    cell, err, field, fingerprint, read_table, ExcelImporter, Group, ImportRun, LegacyDetail,
-    PreparedSheet, RawDetail, Result, SheetImport, Workbook,
+    cell, err, field, fingerprint, read_table, ExcelImporter, ImportRun, LegacyDetail,
+    PreparedSheet, RawDetail, Result, WholeSheetRun, Workbook,
 };
 use calamine::{Data, Range, Reader};
-use rusqlite::{params, OptionalExtension, Transaction};
 
 const HEADERS: &[&str] = &["始发地", "目的地", "提车费", "卡车号"];
 
@@ -23,14 +22,12 @@ impl ExcelImporter for PickupImporter {
     }
 
     fn start(&self, file_stem: &str) -> Box<dyn ImportRun> {
-        Box::new(PickupRun {
+        Box::new(WholeSheetRun {
+            source_table: "excel_pickup_sources",
+            prepare: prepare_sheet,
             file_stem: file_stem.to_owned(),
         })
     }
-}
-
-struct PickupRun {
-    file_stem: String,
 }
 
 fn total_row(
@@ -112,50 +109,15 @@ fn read_details(
     Ok((count, details))
 }
 
-impl ImportRun for PickupRun {
-    fn read_sheet(
-        &mut self,
-        tx: &Transaction<'_>,
-        workbook: &mut Workbook,
-        sheet: &str,
-        errors: &mut Vec<String>,
-    ) -> Result<PreparedSheet> {
-        let (count, details) = read_details(workbook, sheet, errors)?;
-        let mut prepared = PreparedSheet::new(
-            fingerprint(&details)?,
-            count,
-            details.into_iter().map(|row| row.detail).collect(),
-        );
-        let existing: Option<String> = tx.query_row(
-            "SELECT fingerprint FROM excel_pickup_sources WHERE file_stem=? AND sheet=? LIMIT 1",
-            params![self.file_stem, sheet],
-            |row| row.get(0),
-        ).optional().map_err(err)?;
-        if let Some(previous) = existing {
-            if previous == prepared.fingerprint {
-                prepared.duplicates = prepared.rows.len();
-                prepared.duplicate_total = prepared.source_total;
-            } else {
-                errors.push(format!(
-                    "子表「{sheet}」已导入，当前内容与已入账版本不同，请先核对账目"
-                ));
-            }
-            prepared.rows.clear();
-        }
-        Ok(prepared)
-    }
-
-    fn record_sources(
-        &self,
-        tx: &Transaction<'_>,
-        sheet: &SheetImport,
-        _group: &Group,
-        entry_id: i64,
-    ) -> Result<()> {
-        tx.execute(
-            "INSERT INTO excel_pickup_sources(file_stem,sheet,fingerprint,entry_id) VALUES(?,?,?,?)",
-            params![self.file_stem, sheet.name, sheet.fingerprint, entry_id],
-        ).map_err(err)?;
-        Ok(())
-    }
+fn prepare_sheet(
+    workbook: &mut Workbook,
+    sheet: &str,
+    errors: &mut Vec<String>,
+) -> Result<PreparedSheet> {
+    let (count, details) = read_details(workbook, sheet, errors)?;
+    Ok(PreparedSheet::new(
+        fingerprint(&details)?,
+        count,
+        details.into_iter().map(|row| row.detail).collect(),
+    ))
 }

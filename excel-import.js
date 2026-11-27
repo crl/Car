@@ -16,8 +16,8 @@ function installPlateFilter(root, entries, showSheet, esc, money) {
       button.classList.toggle('is-filtered', !all);
     }
     body.innerHTML = entries.filter(entry => selected.has(entry.plate)).map(entry =>
-      `<tr>${showSheet ? `<td data-label="子表">${esc(entry.sheet)}</td>` : ''}<td data-label="车牌">${esc(entry.plate)}</td><td data-label="起点 → 终点">${esc(entry.start)} → ${esc(entry.end)}</td><td data-label="金额">${money(entry.cents)}</td></tr>`
-    ).join('') || `<tr><td colspan="${showSheet ? 4 : 3}" class="empty">没有符合筛选条件的明细。</td></tr>`;
+      `<tr>${showSheet ? `<td data-label="子表">${esc(entry.sheet)}</td>` : ''}<td data-label="车牌">${esc(entry.plate)}</td><td data-label="起点 → 终点">${esc(entry.start)} → ${esc(entry.end)}</td><td data-label="金额">${money(entry.cents)}</td><td data-label="备注">${esc(entry.note || '')}</td></tr>`
+    ).join('') || `<tr><td colspan="${showSheet ? 5 : 4}" class="empty">没有符合筛选条件的明细。</td></tr>`;
   }
 
   function renderChoices() {
@@ -346,7 +346,7 @@ export async function openExcelImport({ service, esc, money, notify, load, bindC
           <div class="scroll"><table><thead><tr>
             ${showSheet ? '<th>子表</th>' : ''}
             <th><button type="button" class="project-header-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="importPlateFilter">车牌 ▾</button></th>
-            <th>起点 → 终点</th><th>金额</th>
+            <th>起点 → 终点</th><th>金额</th><th>备注</th>
           </tr></thead><tbody></tbody></table></div>` : ''}`;
       if (entries.length) installPlateFilter(previewNode, entries, showSheet, esc, money);
       submit.disabled = !entries.length || !!errors.length;

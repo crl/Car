@@ -108,6 +108,30 @@ test('login can be retried and immediately enables creation on an empty ledger',
  }finally{h.close()}
 });
 test('all desktop routes render and expose inline handlers',async()=>{for(const route of ['/cars','/entries','/cars/1','/categories','/addresses','/drivers','/cars/999']){const h=await page(route);try{assert.doesNotMatch(h.w.document.querySelector('main').textContent,/读取失败/);assert.equal(typeof h.w.entryForm,'function');assert.equal(typeof h.w.openSiteSettings,'function');if(route==='/cars/999')assert.match(h.w.document.querySelector('main').textContent,/车辆不存在/)}finally{h.close()}}});
+test('project search narrows choices and preserves selections in both ledger views',async()=>{
+ for(const route of ['/entries','/cars/1']){
+  const h=await page(route),{w}=h,d=w.document;
+  try{
+   const state=fixture();
+   for(const entry of state.entries)if(entry.kind==='支出')entry.category='司机工资';
+   w.service.request=async()=>({ok:true,json:async()=>state});await w.load();
+   const trigger=d.querySelector('[aria-controls="projectPopover"]');
+   w.openProjectFilter(trigger);
+   const input=d.querySelector('#projectSearch'),choices=d.querySelector('#projectChoices');
+   const search=value=>{input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}))};
+   w.allVehicleProjects();
+   for(const query of ['司机','sijigongzi','sjgz','支出']){
+    search(query);
+    assert.deepEqual([...choices.querySelectorAll('label')].map(label=>label.textContent),['司机工资支出']);
+   }
+   const salary=choices.querySelector('input');salary.checked=true;w.toggleVehicleProject(salary);
+   search('不存在');assert.match(choices.textContent,/没有匹配的项目/);
+   assert.match(d.querySelector('#subtotal').textContent,/40 笔/);
+   search('');assert.equal(choices.querySelectorAll('label').length,2);
+   assert.deepEqual([...choices.querySelectorAll('input:checked')].map(el=>JSON.parse(el.value)),[['支出','司机工资']]);
+  }finally{h.close()}
+ }
+});
 test('ledger pagination, intersecting filters, clear and export use all filtered rows',async()=>{const h=await page('/entries'),w=h.w,d=w.document;try{
  assert.equal(d.querySelectorAll('#vehicleEntries tr').length,20);
  assert.match(d.querySelectorAll('.vehicle-entries th')[1].textContent,/车辆/);
