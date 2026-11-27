@@ -869,12 +869,13 @@ test('vehicle color applies to both ledger layouts and stays left of selection',
   assert.equal(d.querySelector('[name=color]:checked').value,'');
   await w.requestClose();
   w.navigateWorkspace('#/entries');
-  const markers=()=>[...d.querySelectorAll('.vehicle-row-marker')];
+  const markers=()=>[...d.querySelectorAll('#vehicleEntries .vehicle-row-marker')];
   assert.equal(markers().length,2);
   assert.ok(markers().every(marker=>marker.dataset.color==='purple'&&marker.title==='备注'));
   d.querySelector('#ledgerBatchToggle').click();
   assert.ok(markers().every(marker=>marker.parentElement.matches('td.ledger-select')&&marker===marker.parentElement.firstChild));
   w.navigateWorkspace('#/cars/1');
+  assert.equal(d.querySelector('.vehicle-profile .vehicle-row-marker').dataset.color,'purple');
   assert.equal(markers().length,2);
   state.cars[0].note='';
   await w.load();
